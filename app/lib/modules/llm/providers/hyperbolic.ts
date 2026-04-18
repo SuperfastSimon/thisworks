@@ -17,31 +17,31 @@ export default class HyperbolicProvider extends BaseProvider {
       name: 'Qwen/Qwen2.5-Coder-32B-Instruct',
       label: 'Qwen 2.5 Coder 32B Instruct',
       provider: 'Hyperbolic',
-      maxTokenAllowed: 8192,
+      maxTokenAllowed: 32768,
+    },
+    {
+      name: 'Qwen/Qwen3-32B',
+      label: 'Qwen3-32B',
+      provider: 'Hyperbolic',
+      maxTokenAllowed: 32768,
     },
     {
       name: 'Qwen/Qwen2.5-72B-Instruct',
       label: 'Qwen2.5-72B-Instruct',
       provider: 'Hyperbolic',
-      maxTokenAllowed: 8192,
+      maxTokenAllowed: 32768,
     },
     {
-      name: 'deepseek-ai/DeepSeek-V2.5',
-      label: 'DeepSeek-V2.5',
+      name: 'deepseek-ai/DeepSeek-R1',
+      label: 'DeepSeek-R1',
       provider: 'Hyperbolic',
-      maxTokenAllowed: 8192,
-    },
-    {
-      name: 'Qwen/QwQ-32B-Preview',
-      label: 'QwQ-32B-Preview',
-      provider: 'Hyperbolic',
-      maxTokenAllowed: 8192,
+      maxTokenAllowed: 131072,
     },
     {
       name: 'Qwen/Qwen2-VL-72B-Instruct',
       label: 'Qwen2-VL-72B-Instruct',
       provider: 'Hyperbolic',
-      maxTokenAllowed: 8192,
+      maxTokenAllowed: 32768,
     },
   ];
 

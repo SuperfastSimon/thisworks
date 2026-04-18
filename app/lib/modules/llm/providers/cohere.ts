@@ -14,33 +14,40 @@ export default class CohereProvider extends BaseProvider {
 
   staticModels: ModelInfo[] = [
     {
+      name: 'command-a-03-2025',
+      label: 'Command A (Mar 2025)',
+      provider: 'Cohere',
+      maxTokenAllowed: 131072,
+      maxCompletionTokens: 8192,
+    },
+    {
       name: 'command-r-plus-08-2024',
       label: 'Command R plus Latest',
       provider: 'Cohere',
-      maxTokenAllowed: 4096,
+      maxTokenAllowed: 131072,
       maxCompletionTokens: 4000,
     },
     {
       name: 'command-r-08-2024',
       label: 'Command R Latest',
       provider: 'Cohere',
-      maxTokenAllowed: 4096,
+      maxTokenAllowed: 131072,
       maxCompletionTokens: 4000,
     },
     {
       name: 'command-r-plus',
       label: 'Command R plus',
       provider: 'Cohere',
-      maxTokenAllowed: 4096,
+      maxTokenAllowed: 131072,
       maxCompletionTokens: 4000,
     },
-    { name: 'command-r', label: 'Command R', provider: 'Cohere', maxTokenAllowed: 4096, maxCompletionTokens: 4000 },
+    { name: 'command-r', label: 'Command R', provider: 'Cohere', maxTokenAllowed: 131072, maxCompletionTokens: 4000 },
     { name: 'command', label: 'Command', provider: 'Cohere', maxTokenAllowed: 4096, maxCompletionTokens: 4000 },
     {
       name: 'command-nightly',
       label: 'Command Nightly',
       provider: 'Cohere',
-      maxTokenAllowed: 4096,
+      maxTokenAllowed: 131072,
       maxCompletionTokens: 4000,
     },
     {
@@ -61,14 +68,14 @@ export default class CohereProvider extends BaseProvider {
       name: 'c4ai-aya-expanse-8b',
       label: 'c4AI Aya Expanse 8b',
       provider: 'Cohere',
-      maxTokenAllowed: 4096,
+      maxTokenAllowed: 8192,
       maxCompletionTokens: 4000,
     },
     {
       name: 'c4ai-aya-expanse-32b',
       label: 'c4AI Aya Expanse 32b',
       provider: 'Cohere',
-      maxTokenAllowed: 4096,
+      maxTokenAllowed: 131072,
       maxCompletionTokens: 4000,
     },
   ];
