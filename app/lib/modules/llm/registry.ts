@@ -19,7 +19,7 @@ import { TogetherProvider } from './providers/together';
 import { LMStudioProvider } from './providers/lmstudio';
 import { AmazonBedrockProvider } from './providers/amazon-bedrock';
 import { GithubProvider } from './providers/github';
-import { ZaiProvider } from './providers/zai';
+import { ZaiProvider } from './providers/z-ai';
 
 export {
   OpenAIProvider,
