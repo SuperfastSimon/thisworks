@@ -1,14 +1,20 @@
-import { memo, useMemo } from 'react';
+/*
+ * Aliased deliberately. Without an `ai` import in this file, a bare `Message`
+ * silently resolves to the DOM Message interface (body, attempts, retry, ack)
+ * instead of failing to compile.
+ */
+import type { UIMessage as AiMessage } from 'ai';
+import { memo, useMemo, useRef } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import type { BundledLanguage } from 'shiki';
-import { createScopedLogger } from '~/utils/logger';
-import { rehypePlugins, remarkPlugins, allowedHTMLElements } from '~/utils/markdown';
 import { Artifact, openArtifactInWorkbench } from './Artifact';
 import { CodeBlock } from './CodeBlock';
-import type { Message } from 'ai';
 import styles from './Markdown.module.scss';
 import ThoughtBox from './ThoughtBox';
+import { createMessage } from '~/lib/persistence/messageMigration';
 import type { ProviderInfo } from '~/types/model';
+import { createScopedLogger } from '~/utils/logger';
+import { rehypePlugins, remarkPlugins } from '~/utils/markdown';
 
 const logger = createScopedLogger('MarkdownComponent');
 
@@ -16,16 +22,139 @@ interface MarkdownProps {
   children: string;
   html?: boolean;
   limitedMarkdown?: boolean;
-  append?: (message: Message) => void;
+  append?: (message: AiMessage) => void;
   chatMode?: 'discuss' | 'build';
   setChatMode?: (mode: 'discuss' | 'build') => void;
   model?: string;
   provider?: ProviderInfo;
+
+  /**
+   * When true, the parent message is still receiving tokens.  This is threaded
+   * down to CodeBlock to skip Shiki highlighting and is used here to split the
+   * content into frozen (memoized) blocks and a single live tail block.
+   */
+  isStreaming?: boolean;
 }
 
+/*
+ * ---------------------------------------------------------------------------
+ * Frozen-block memoization
+ * ---------------------------------------------------------------------------
+ * During streaming the full markdown content string changes on every token.
+ * Passing the entire string to a single <ReactMarkdown> causes it to re-parse
+ * and re-render *everything* each time — O(message length) work per token.
+ *
+ * We split the content on blank-line boundaries ("\n\n") and treat every block
+ * except the last as "frozen" — they are individually wrapped in a memo'd
+ * component so React skips reconciliation for them entirely.  Only the last
+ * (live) block is re-rendered on each token.
+ *
+ * Inspired by https://claude.dev/blog/how-we-made-claude-ai-faster/
+ * ---------------------------------------------------------------------------
+ */
+
+/**
+ * Splits markdown content into stable blocks on double-newline boundaries.
+ * Returns { frozenBlocks: string[], tailBlock: string }.
+ *
+ * When `isStreaming` is false the entire string is returned as a single tail
+ * block so the component behaves identically to the original implementation
+ * (one `<ReactMarkdown>` for the whole content).
+ */
+function splitBlocks(content: string, isStreaming: boolean): { frozen: string[]; tail: string } {
+  if (!isStreaming || !content) {
+    return { frozen: [], tail: content };
+  }
+
+  /*
+   * We split on double-newlines which is the standard markdown block
+   * separator.  We keep the separator attached to the block before it so
+   * that each block is valid markdown on its own.
+   *
+   * Important: we must NOT split inside code fences.  A simple heuristic:
+   * only split on "\n\n" that is preceded by a closed code fence count
+   * (even number of ``` markers).  For simplicity and safety we use a
+   * regex-free approach: split, then re-merge any block that has an odd
+   * number of open fences.
+   */
+  const rawParts = content.split('\n\n');
+
+  if (rawParts.length <= 1) {
+    return { frozen: [], tail: content };
+  }
+
+  // Re-merge parts that are inside unclosed code fences
+  const merged: string[] = [];
+
+  let openFences = 0;
+
+  for (const part of rawParts) {
+    const fenceMatches = part.match(/^```/gm);
+    const fenceCount = fenceMatches ? fenceMatches.length : 0;
+
+    if (openFences % 2 !== 0) {
+      // We're inside an unclosed fence — append to previous block
+      merged[merged.length - 1] += '\n\n' + part;
+    } else {
+      merged.push(part);
+    }
+
+    openFences += fenceCount;
+  }
+
+  if (merged.length <= 1) {
+    return { frozen: [], tail: content };
+  }
+
+  // Everything except the last block is frozen
+  const frozen = merged.slice(0, -1);
+  const tail = merged[merged.length - 1];
+
+  return { frozen, tail };
+}
+
+/**
+ * A single frozen markdown block.  The content string is used as the
+ * comparison key, so identical content is never re-rendered.
+ */
+const FrozenBlock = memo(
+  ({
+    content,
+    components,
+    remarkPluginsFn,
+    rehypePluginsFn,
+  }: {
+    content: string;
+    components: Components;
+    remarkPluginsFn: ReturnType<typeof remarkPlugins>;
+    rehypePluginsFn: ReturnType<typeof rehypePlugins>;
+  }) => (
+    <ReactMarkdown components={components} remarkPlugins={remarkPluginsFn} rehypePlugins={rehypePluginsFn}>
+      {content}
+    </ReactMarkdown>
+  ),
+  (prev, next) => prev.content === next.content,
+);
+
 export const Markdown = memo(
-  ({ children, html = false, limitedMarkdown = false, append, setChatMode, model, provider }: MarkdownProps) => {
+  ({
+    children,
+    html = false,
+    limitedMarkdown = false,
+    append,
+    setChatMode,
+    model,
+    provider,
+    isStreaming = false,
+  }: MarkdownProps) => {
     logger.trace('Render');
+
+    /*
+     * Cache the frozen block strings across renders so that referential equality
+     * is preserved for blocks that haven't changed.  This lets `FrozenBlock`'s
+     * memo comparator short-circuit via ===.
+     */
+    const frozenCacheRef = useRef<string[]>([]);
 
     const components = useMemo(() => {
       return {
@@ -58,7 +187,11 @@ export const Markdown = memo(
               try {
                 elementData = JSON.parse(elementDataAttr);
               } catch (e) {
-                console.error('Failed to parse element data:', e);
+                try {
+                  elementData = JSON.parse(decodeURIComponent(elementDataAttr));
+                } catch {
+                  console.error('Failed to parse element data:', e);
+                }
               }
             }
 
@@ -102,16 +235,28 @@ export const Markdown = memo(
 
           const [firstChild] = node?.children ?? [];
 
+          /*
+           * `children?.[0]` and `?? ''` guard an empty fence (``` ``` ```): it has
+           * no children, so reading `.type` off `children[0]` threw and took down the
+           * React tree.
+           */
           if (
             firstChild &&
             firstChild.type === 'element' &&
             firstChild.tagName === 'code' &&
-            firstChild.children[0].type === 'text'
+            firstChild.children?.[0]?.type === 'text'
           ) {
             const { className, ...rest } = firstChild.properties;
             const [, language = 'plaintext'] = /language-(\w+)/.exec(String(className) || '') ?? [];
 
-            return <CodeBlock code={firstChild.children[0].value} language={language as BundledLanguage} {...rest} />;
+            return (
+              <CodeBlock
+                {...rest}
+                code={firstChild.children[0].value ?? ''}
+                language={language as BundledLanguage}
+                isStreaming={isStreaming}
+              />
+            );
           }
 
           return <pre {...rest}>{children}</pre>;
@@ -149,29 +294,23 @@ export const Markdown = memo(
                   if (type === 'file') {
                     openArtifactInWorkbench(path);
                   } else if (type === 'message' && append) {
-                    append({
-                      id: `quick-action-message-${Date.now()}`,
-                      content: [
-                        {
-                          type: 'text',
-                          text: `[Model: ${model}]\n\n[Provider: ${provider?.name}]\n\n${message}`,
-                        },
-                      ] as any,
-                      role: 'user',
-                    });
+                    append(
+                      createMessage({
+                        id: `quick-action-message-${Date.now()}`,
+                        role: 'user',
+                        text: `[Model: ${model}]\n\n[Provider: ${provider?.name}]\n\n${message}`,
+                      }) as any,
+                    );
                     console.log('Message appended:', message);
                   } else if (type === 'implement' && append && setChatMode) {
                     setChatMode('build');
-                    append({
-                      id: `quick-action-implement-${Date.now()}`,
-                      content: [
-                        {
-                          type: 'text',
-                          text: `[Model: ${model}]\n\n[Provider: ${provider?.name}]\n\n${message}`,
-                        },
-                      ] as any,
-                      role: 'user',
-                    });
+                    append(
+                      createMessage({
+                        id: `quick-action-implement-${Date.now()}`,
+                        role: 'user',
+                        text: `[Model: ${model}]\n\n[Provider: ${provider?.name}]\n\n${message}`,
+                      }) as any,
+                    );
                   } else if (type === 'link' && typeof href === 'string') {
                     try {
                       const url = new URL(href, window.location.origin);
@@ -191,18 +330,50 @@ export const Markdown = memo(
           return <button {...props}>{children}</button>;
         },
       } satisfies Components;
-    }, []);
+    }, [isStreaming]);
+
+    const remarkPluginsFn = useMemo(() => remarkPlugins(limitedMarkdown), [limitedMarkdown]);
+    const rehypePluginsFn = useMemo(() => rehypePlugins(html), [html]);
+
+    const processedContent = stripCodeFenceFromArtifact(children);
+
+    // Split into frozen + tail blocks for streaming optimization
+    const { frozen, tail } = splitBlocks(processedContent, isStreaming);
+
+    // Update the frozen cache: grow it but never shrink mid-stream
+    const cachedFrozen = frozenCacheRef.current;
+
+    for (let i = 0; i < frozen.length; i++) {
+      if (cachedFrozen[i] !== frozen[i]) {
+        cachedFrozen[i] = frozen[i];
+      }
+    }
+
+    // Trim if frozen shrank (shouldn't normally happen mid-stream)
+    if (cachedFrozen.length > frozen.length) {
+      cachedFrozen.length = frozen.length;
+    }
+
+    frozenCacheRef.current = cachedFrozen;
 
     return (
-      <ReactMarkdown
-        allowedElements={allowedHTMLElements}
-        className={styles.MarkdownContent}
-        components={components}
-        remarkPlugins={remarkPlugins(limitedMarkdown)}
-        rehypePlugins={rehypePlugins(html)}
-      >
-        {stripCodeFenceFromArtifact(children)}
-      </ReactMarkdown>
+      <div className={styles.MarkdownContent}>
+        {/* Frozen blocks — individually memoized, never re-rendered once stable */}
+        {cachedFrozen.map((block, i) => (
+          <FrozenBlock
+            key={`frozen-${i}`}
+            content={block}
+            components={components}
+            remarkPluginsFn={remarkPluginsFn}
+            rehypePluginsFn={rehypePluginsFn}
+          />
+        ))}
+
+        {/* Live tail block — re-rendered on every token */}
+        <ReactMarkdown components={components} remarkPlugins={remarkPluginsFn} rehypePlugins={rehypePluginsFn}>
+          {tail}
+        </ReactMarkdown>
+      </div>
     );
   },
 );

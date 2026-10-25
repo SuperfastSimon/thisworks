@@ -1,25 +1,27 @@
+import { Octokit, type RestEndpointMethodTypes } from '@octokit/rest';
+import fileSaver from 'file-saver';
+import Cookies from 'js-cookie';
+import JSZip from 'jszip';
 import { atom, map, type MapStore, type ReadableAtom, type WritableAtom } from 'nanostores';
-import type { EditorDocument, ScrollPosition } from '~/components/editor/codemirror/CodeMirrorEditor';
-import { ActionRunner } from '~/lib/runtime/action-runner';
-import type { ActionCallbackData, ArtifactCallbackData } from '~/lib/runtime/message-parser';
-import { webcontainer } from '~/lib/webcontainer';
-import type { ITerminal } from '~/types/terminal';
-import { unreachable } from '~/utils/unreachable';
 import { EditorStore } from './editor';
 import { FilesStore, type FileMap } from './files';
 import { PreviewsStore } from './previews';
 import { TerminalStore } from './terminal';
-import JSZip from 'jszip';
-import fileSaver from 'file-saver';
-import { Octokit, type RestEndpointMethodTypes } from '@octokit/rest';
-import { path } from '~/utils/path';
-import { extractRelativePath } from '~/utils/diff';
+import type { EditorDocument, ScrollPosition } from '~/components/editor/codemirror/CodeMirrorEditor';
 import { description } from '~/lib/persistence';
-import Cookies from 'js-cookie';
-import { createSampler } from '~/utils/sampler';
-import type { ActionAlert, DeployAlert, SupabaseAlert } from '~/types/actions';
+import { ActionRunner } from '~/lib/runtime/action-runner';
+import type { ActionCallbackData, ArtifactCallbackData } from '~/lib/runtime/message-parser';
+import { webcontainer } from '~/lib/webcontainer';
+import type { ActionAlert, BoltAction, DeployAlert, SupabaseAlert } from '~/types/actions';
+import type { ITerminal } from '~/types/terminal';
+import { extractRelativePath } from '~/utils/diff';
+import { createScopedLogger } from '~/utils/logger';
+import { path } from '~/utils/path';
+import { unreachable } from '~/utils/unreachable';
 
 const { saveAs } = fileSaver;
+
+const logger = createScopedLogger('WorkbenchStore');
 
 export interface ArtifactState {
   id: string;
@@ -43,10 +45,19 @@ export class WorkbenchStore {
 
   #reloadedMessages = new Set<string>();
 
+  /**
+   * File actions the model emitted without a path. They cannot be written, and the streaming
+   * sampler re-invokes the same action on an interval, so they are only reported once.
+   */
+  #skippedFileActions = new WeakSet<BoltAction>();
+
   artifacts: Artifacts = import.meta.hot?.data.artifacts ?? map({});
 
-  showWorkbench: WritableAtom<boolean> = import.meta.hot?.data.showWorkbench ?? atom(false);
+  showWorkbench: WritableAtom<boolean> = import.meta.hot?.data.showWorkbench ?? atom(true);
+  projectGeneration: WritableAtom<number> = import.meta.hot?.data.projectGeneration ?? atom(0);
   currentView: WritableAtom<WorkbenchViewType> = import.meta.hot?.data.currentView ?? atom('code');
+  userSelectedView: WritableAtom<WorkbenchViewType | undefined> =
+    import.meta.hot?.data.userSelectedView ?? atom<WorkbenchViewType | undefined>(undefined);
   unsavedFiles: WritableAtom<Set<string>> = import.meta.hot?.data.unsavedFiles ?? atom(new Set<string>());
   actionAlert: WritableAtom<ActionAlert | undefined> =
     import.meta.hot?.data.actionAlert ?? atom<ActionAlert | undefined>(undefined);
@@ -57,12 +68,21 @@ export class WorkbenchStore {
   modifiedFiles = new Set<string>();
   artifactIdList: string[] = [];
   #globalExecutionQueue = Promise.resolve();
+  #fileActionQueue = Promise.resolve();
+  #actionGeneration = 0;
+  #inFlightActionTasks = new Set<Promise<void>>();
+  #pendingStreamActions = new Map<
+    string,
+    { data: ActionCallbackData; generation: number; timer: ReturnType<typeof setTimeout> }
+  >();
   constructor() {
     if (import.meta.hot) {
       import.meta.hot.data.artifacts = this.artifacts;
       import.meta.hot.data.unsavedFiles = this.unsavedFiles;
       import.meta.hot.data.showWorkbench = this.showWorkbench;
+      import.meta.hot.data.projectGeneration = this.projectGeneration;
       import.meta.hot.data.currentView = this.currentView;
+      import.meta.hot.data.userSelectedView = this.userSelectedView;
       import.meta.hot.data.actionAlert = this.actionAlert;
       import.meta.hot.data.supabaseAlert = this.supabaseAlert;
       import.meta.hot.data.deployAlert = this.deployAlert;
@@ -80,7 +100,72 @@ export class WorkbenchStore {
   }
 
   addToExecutionQueue(callback: () => Promise<void>) {
-    this.#globalExecutionQueue = this.#globalExecutionQueue.then(() => callback());
+    const queuedAction = this.#globalExecutionQueue
+      .then(() => callback())
+      .catch((error) => {
+        logger.error('Queued action failed', error);
+      });
+
+    this.#globalExecutionQueue = queuedAction;
+
+    return queuedAction;
+  }
+
+  /** Serialize an awaited project mutation with model actions and project resets. */
+  queueProjectMutation<T>(callback: () => Promise<T>): Promise<T> {
+    const operation = this.#globalExecutionQueue.then(callback);
+    this.#globalExecutionQueue = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    return operation;
+  }
+
+  waitForExecutionQueue() {
+    return this.#waitForAllActions();
+  }
+
+  async #waitForAllActions() {
+    while (true) {
+      await this.#globalExecutionQueue;
+      this.#flushPendingStreamActions();
+
+      const inFlightActions = [...this.#inFlightActionTasks];
+
+      if (inFlightActions.length > 0) {
+        await Promise.allSettled(inFlightActions);
+        continue;
+      }
+
+      if (this.#pendingStreamActions.size === 0) {
+        return;
+      }
+    }
+  }
+
+  #flushPendingStreamActions() {
+    for (const [actionId, pending] of this.#pendingStreamActions) {
+      clearTimeout(pending.timer);
+      this.#pendingStreamActions.delete(actionId);
+
+      if (pending.generation === this.#actionGeneration) {
+        void this.#trackAction(pending.data, true, pending.generation).catch((error) => {
+          logger.error('Streamed action failed', error);
+        });
+      }
+    }
+  }
+
+  async waitForFileActions() {
+    while (true) {
+      const queuedFiles = this.#fileActionQueue;
+      await queuedFiles;
+
+      if (queuedFiles === this.#fileActionQueue) {
+        return;
+      }
+    }
   }
 
   get previews() {
@@ -136,8 +221,73 @@ export class WorkbenchStore {
     this.deployAlert.set(undefined);
   }
 
+  /**
+   * Drops the workbench and the container contents of the chat being left behind.
+   *
+   * The messages, the artifacts and the files on disk all describe one chat, so
+   * a switch has to clear them together. Awaited by the caller so the incoming
+   * chat only starts writing once the outgoing project is gone.
+   */
+  async resetWorkbench(isCurrent: () => boolean = () => true) {
+    if (!isCurrent()) {
+      return;
+    }
+
+    /*
+     * Invalidate streamed callbacks immediately, then let any filesystem work
+     * already in progress finish before clearing the container.
+     */
+    this.#actionGeneration++;
+    this.projectGeneration.set(this.projectGeneration.get() + 1);
+
+    for (const pending of this.#pendingStreamActions.values()) {
+      clearTimeout(pending.timer);
+    }
+
+    this.#pendingStreamActions.clear();
+
+    const outgoingArtifacts = Object.values(this.artifacts.get());
+    const outgoingExecution = this.boltTerminal.executionState.get();
+
+    for (const artifact of outgoingArtifacts) {
+      artifact.runner.abortAllActions();
+    }
+
+    /*
+     * Capture and interrupt the outgoing command before awaiting the queue.
+     * A later command must never be stopped by a delayed reset.
+     */
+    const stopped = outgoingExecution?.active ? this.boltTerminal.stop(outgoingExecution.sessionId) : Promise.resolve();
+
+    await Promise.all([this.waitForExecutionQueue(), stopped]);
+
+    if (!isCurrent()) {
+      return;
+    }
+
+    this.#previewsStore.reset();
+
+    this.artifacts.set({});
+    this.artifactIdList = [];
+    this.showWorkbench.set(true);
+    this.currentView.set('code');
+    this.userSelectedView.set(undefined);
+    this.unsavedFiles.set(new Set<string>());
+    this.setSelectedFile(undefined);
+    this.clearAlert();
+    this.clearSupabaseAlert();
+    this.clearDeployAlert();
+    this.#reloadedMessages.clear();
+
+    await this.#filesStore.reset();
+  }
+
   toggleTerminal(value?: boolean) {
     this.#terminalStore.toggleTerminal(value);
+  }
+
+  writeToBoltTerminal(data: string) {
+    this.#terminalStore.writeToBoltTerminal(data);
   }
 
   attachTerminal(terminal: ITerminal) {
@@ -171,6 +321,19 @@ export class WorkbenchStore {
 
   setShowWorkbench(show: boolean) {
     this.showWorkbench.set(show);
+  }
+
+  /**
+   * Select a workbench view tab. When `userInitiated` is true, the choice is
+   * remembered so that automatic view switches (e.g. preview becoming available)
+   * don't override the user's explicit preference.
+   */
+  selectWorkbenchView(view: WorkbenchViewType, options?: { userInitiated?: boolean }) {
+    if (options?.userInitiated) {
+      this.userSelectedView.set(view);
+    }
+
+    this.currentView.set(view);
   }
 
   setCurrentDocumentContent(newContent: string) {
@@ -242,6 +405,32 @@ export class WorkbenchStore {
     newUnsavedFiles.delete(filePath);
 
     this.unsavedFiles.set(newUnsavedFiles);
+  }
+
+  /** Persist a complete UTF-8 file body while preserving FilesStore change history. */
+  async saveFileContent(filePath: string, content: string) {
+    const file = this.#filesStore.getFile(filePath);
+
+    if (!file) {
+      return this.createFile(filePath, content);
+    }
+
+    if (file.isBinary) {
+      throw new Error(`Cannot write text content to a binary file: ${filePath}`);
+    }
+
+    if (this.isFileLocked(filePath).locked) {
+      throw new Error(`Cannot write a locked file: ${filePath}`);
+    }
+
+    this.#editorStore.updateFile(filePath, content);
+    await this.#filesStore.saveFile(filePath, content);
+
+    const newUnsavedFiles = new Set(this.unsavedFiles.get());
+    newUnsavedFiles.delete(filePath);
+    this.unsavedFiles.set(newUnsavedFiles);
+
+    return true;
   }
 
   async saveCurrentDocument() {
@@ -343,6 +532,13 @@ export class WorkbenchStore {
     return this.#filesStore.isFolderLocked(folderPath);
   }
 
+  /**
+   * Clear all locks for the current chat (useful when streaming errors occur)
+   */
+  clearAllLocks() {
+    return this.#filesStore.clearAllLocksForCurrentChat();
+  }
+
   async createFile(filePath: string, content: string | Uint8Array = '') {
     try {
       const success = await this.#filesStore.createFile(filePath, content);
@@ -394,6 +590,7 @@ export class WorkbenchStore {
 
         if (isCurrentFile) {
           const files = this.files.get();
+
           let nextFile: string | undefined = undefined;
 
           for (const [path, dirent] of Object.entries(files)) {
@@ -437,6 +634,7 @@ export class WorkbenchStore {
 
         if (isInCurrentFolder) {
           const files = this.files.get();
+
           let nextFile: string | undefined = undefined;
 
           for (const [path, dirent] of Object.entries(files)) {
@@ -458,7 +656,23 @@ export class WorkbenchStore {
   }
 
   abortAllActions() {
-    // TODO: what do we wanna do and how do we wanna recover from this?
+    const artifacts = this.artifacts.get();
+
+    for (const artifact of Object.values(artifacts)) {
+      if (artifact.runner) {
+        artifact.runner.abortAllActions();
+      }
+    }
+
+    if (this.boltTerminal) {
+      try {
+        this.boltTerminal.terminal?.input('\x03');
+      } catch (error) {
+        console.error('Failed to interrupt terminal during abort:', error);
+      }
+    }
+
+    this.actionAlert.set(undefined);
   }
 
   setReloadedMessages(messages: string[]) {
@@ -540,13 +754,55 @@ export class WorkbenchStore {
   }
 
   runAction(data: ActionCallbackData, isStreaming: boolean = false) {
+    const generation = this.#actionGeneration;
+    const streamKey = `${data.artifactId}:${data.actionId}`;
+
     if (isStreaming) {
-      this.actionStreamSampler(data, isStreaming);
+      const pending = this.#pendingStreamActions.get(streamKey);
+
+      if (pending) {
+        clearTimeout(pending.timer);
+      }
+
+      const timer = setTimeout(() => {
+        this.#pendingStreamActions.delete(streamKey);
+
+        if (generation === this.#actionGeneration) {
+          void this.#trackAction(data, true, generation).catch((error) => {
+            logger.error('Streamed action failed', error);
+          });
+        }
+      }, 100);
+
+      this.#pendingStreamActions.set(streamKey, { data, generation, timer });
     } else {
-      this.addToExecutionQueue(() => this._runAction(data, isStreaming));
+      const queuedAction = this.addToExecutionQueue(() => this.#trackAction(data, isStreaming, generation));
+
+      if (data.action.type === 'file') {
+        this.#fileActionQueue = queuedAction;
+      }
     }
   }
-  async _runAction(data: ActionCallbackData, isStreaming: boolean = false) {
+  async #trackAction(data: ActionCallbackData, isStreaming: boolean, generation: number) {
+    if (generation !== this.#actionGeneration) {
+      return;
+    }
+
+    const task = this._runAction(data, isStreaming, generation);
+    this.#inFlightActionTasks.add(task);
+
+    try {
+      await task;
+    } finally {
+      this.#inFlightActionTasks.delete(task);
+    }
+  }
+
+  async _runAction(data: ActionCallbackData, isStreaming: boolean = false, generation = this.#actionGeneration) {
+    if (generation !== this.#actionGeneration) {
+      return;
+    }
+
     const { artifactId } = data;
 
     const artifact = this.#getArtifact(artifactId);
@@ -562,8 +818,30 @@ export class WorkbenchStore {
     }
 
     if (data.action.type === 'file') {
+      if (!data.action.filePath) {
+        if (!this.#skippedFileActions.has(action)) {
+          this.#skippedFileActions.add(action);
+          logger.warn('File action has no filePath; it cannot be written to the project');
+        }
+
+        return;
+      }
+
       const wc = await webcontainer;
-      const fullPath = path.join(wc.workdir, data.action.filePath);
+
+      if (generation !== this.#actionGeneration) {
+        return;
+      }
+
+      const fullPath = path.isAbsolute(data.action.filePath)
+        ? path.normalize(data.action.filePath)
+        : path.join(wc.workdir, data.action.filePath);
+
+      const relativePath = path.relative(wc.workdir, fullPath);
+
+      if (relativePath === '..' || relativePath.startsWith('../') || path.isAbsolute(relativePath)) {
+        throw new Error(`Cannot update file outside the project directory: ${data.action.filePath}`);
+      }
 
       /*
        * For scoped locks, we would need to implement diff checking here
@@ -575,7 +853,7 @@ export class WorkbenchStore {
         this.setSelectedFile(fullPath);
       }
 
-      if (this.currentView.value !== 'code') {
+      if (this.currentView.value !== 'code' && this.userSelectedView.get() === undefined) {
         this.currentView.set('code');
       }
 
@@ -583,12 +861,34 @@ export class WorkbenchStore {
 
       if (!doc) {
         await artifact.runner.runAction(data, isStreaming);
+
+        if (generation !== this.#actionGeneration) {
+          return;
+        }
+      }
+
+      /*
+       * The first write can happen before FilesStore's WebContainer watcher
+       * is ready. Register the file directly when that watcher has not
+       * populated the store, so imported projects do not remain invisible
+       * in the file tree and editor.
+       */
+      if (!this.#filesStore.getFile(fullPath)) {
+        await this.#filesStore.createFile(fullPath, data.action.content);
+
+        if (generation !== this.#actionGeneration) {
+          return;
+        }
       }
 
       this.#editorStore.updateFile(fullPath, data.action.content);
 
       if (!isStreaming && data.action.content) {
         await this.saveFile(fullPath);
+
+        if (generation !== this.#actionGeneration) {
+          return;
+        }
       }
 
       if (!isStreaming) {
@@ -599,10 +899,6 @@ export class WorkbenchStore {
       await artifact.runner.runAction(data);
     }
   }
-
-  actionStreamSampler = createSampler(async (data: ActionCallbackData, isStreaming: boolean = false) => {
-    return await this._runAction(data, isStreaming);
-  }, 100); // TODO: remove this magic number to have it configurable
 
   #getArtifact(id: string) {
     const artifacts = this.artifacts.get();
@@ -655,6 +951,7 @@ export class WorkbenchStore {
       if (dirent?.type === 'file' && !dirent.isBinary) {
         const relativePath = extractRelativePath(filePath);
         const pathSegments = relativePath.split('/');
+
         let currentHandle = targetHandle;
 
         for (let i = 0; i < pathSegments.length - 1; i++) {
@@ -819,6 +1116,7 @@ export class WorkbenchStore {
               repo: repo.name,
               ref: `heads/${repo.default_branch || 'main'}`, // Handle dynamic branch
             });
+
             const latestCommitSha = ref.object.sha;
 
             // Create a new tree

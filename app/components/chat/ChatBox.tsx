@@ -1,25 +1,33 @@
+import { useStore } from '@nanostores/react';
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import React from 'react';
 import { ClientOnly } from 'remix-utils/client-only';
-import { classNames } from '~/utils/classNames';
-import { PROVIDER_LIST } from '~/utils/constants';
-import { ModelSelector } from '~/components/chat/ModelSelector';
 import { APIKeyManager } from './APIKeyManager';
-import { LOCAL_PROVIDERS } from '~/lib/stores/settings';
+import { AttachmentMenu } from './AttachmentMenu';
+import styles from './BaseChat.module.scss';
 import FilePreview from './FilePreview';
+import { McpTools } from './MCPTools';
 import { ScreenshotStateManager } from './ScreenshotStateManager';
 import { SendButton } from './SendButton.client';
-import { IconButton } from '~/components/ui/IconButton';
-import { toast } from 'react-toastify';
-import { SpeechRecognitionButton } from '~/components/chat/SpeechRecognition';
 import { SupabaseConnection } from './SupabaseConnection';
-import { ExpoQrModal } from '~/components/workbench/ExpoQrModal';
-import styles from './BaseChat.module.scss';
-import type { ProviderInfo } from '~/types/model';
+import { ToolAccessMenu } from './ToolAccessMenu';
+import { ModelSelector } from '~/components/chat/ModelSelector';
+import { SpeechRecognitionButton } from '~/components/chat/SpeechRecognition';
 import { ColorSchemeDialog } from '~/components/ui/ColorSchemeDialog';
-import type { DesignScheme } from '~/types/design-scheme';
+import { IconButton } from '~/components/ui/IconButton';
+import { ExpoQrModal } from '~/components/workbench/ExpoQrModal';
 import type { ElementInfo } from '~/components/workbench/Inspector';
-import { McpTools } from './MCPTools';
-import { WebSearch } from './WebSearch.client';
+import { isGitHubConnected } from '~/lib/stores/githubConnection';
+import { isGitLabConnected } from '~/lib/stores/gitlabConnection';
+import { useMCPStore, type ConnectorId } from '~/lib/stores/mcp';
+import { netlifyConnection } from '~/lib/stores/netlify';
+import { LOCAL_PROVIDERS } from '~/lib/stores/settings';
+import { supabaseConnection } from '~/lib/stores/supabase';
+import { vercelConnection } from '~/lib/stores/vercel';
+import type { DesignScheme } from '~/types/design-scheme';
+import type { ProviderInfo } from '~/types/model';
+import { classNames } from '~/utils/classNames';
+import { PROVIDER_LIST } from '~/utils/constants';
 
 interface ChatBoxProps {
   isModelSettingsCollapsed: boolean;
@@ -32,7 +40,7 @@ interface ChatBoxProps {
   onApiKeysChange: (providerName: string, apiKey: string) => void;
   uploadedFiles: File[];
   imageDataList: string[];
-  textareaRef: React.RefObject<HTMLTextAreaElement> | undefined;
+  textareaRef: React.RefObject<HTMLTextAreaElement | null> | undefined;
   input: string;
   handlePaste: (e: React.ClipboardEvent) => void;
   TEXTAREA_MIN_HEIGHT: number;
@@ -56,9 +64,10 @@ interface ChatBoxProps {
   handleStop?: (() => void) | undefined;
   enhancingPrompt?: boolean | undefined;
   enhancePrompt?: (() => void) | undefined;
-  onWebSearchResult?: (result: string) => void;
   chatMode?: 'discuss' | 'build';
   setChatMode?: (mode: 'discuss' | 'build') => void;
+  agentMode?: boolean;
+  setAgentMode?: (enabled: boolean) => void;
   designScheme?: DesignScheme;
   setDesignScheme?: (scheme: DesignScheme) => void;
   selectedElement?: ElementInfo | null;
@@ -66,6 +75,88 @@ interface ChatBoxProps {
 }
 
 export const ChatBox: React.FC<ChatBoxProps> = (props) => {
+  const [isMcpToolsOpen, setIsMcpToolsOpen] = React.useState(false);
+  const mcpToolsInitialized = useMCPStore((state) => state.isInitialized);
+  const mcpSettings = useMCPStore((state) => state.settings);
+  const setWebSearchEnabled = useMCPStore((state) => state.setWebSearchEnabled);
+  const setConnectorEnabled = useMCPStore((state) => state.setConnectorEnabled);
+  const serverTools = useMCPStore((state) => state.serverTools);
+  const supabaseConnectionState = useStore(supabaseConnection);
+  const supabaseConnected = !!supabaseConnectionState.isConnected;
+  const githubConnected = useStore(isGitHubConnected);
+  const gitlabConnected = useStore(isGitLabConnected);
+  const vercelConnected = !!useStore(vercelConnection).user;
+  const netlifyConnected = !!useStore(netlifyConnection).user;
+  const browserUseCloudAvailable = serverTools['browser-use-cloud']?.status === 'available';
+
+  const connectors = (
+    [
+      { id: 'github', name: 'GitHub', icon: <div className="i-ph:github-logo text-lg" />, available: githubConnected },
+      {
+        id: 'gitlab',
+        name: 'GitLab',
+        icon: <div className="i-ph:gitlab-logo text-lg" />,
+        available: gitlabConnected,
+      },
+      {
+        id: 'vercel',
+        name: 'Vercel',
+        icon: <div className="i-ph:triangle text-lg" />,
+        available: vercelConnected,
+      },
+      {
+        id: 'netlify',
+        name: 'Netlify',
+        icon: <div className="i-ph:cloud text-lg" />,
+        available: netlifyConnected,
+      },
+      {
+        id: 'supabase',
+        name: 'Supabase',
+        icon: <img className="w-4 h-4" height="16" width="16" src="https://cdn.simpleicons.org/supabase" alt="" />,
+        available: supabaseConnected,
+      },
+      {
+        id: 'browserUseCloud',
+        name: 'Browser Use Cloud',
+        icon: <div className="i-ph:browser text-lg" />,
+        available: browserUseCloudAvailable,
+      },
+    ] as { id: ConnectorId; name: string; icon: React.ReactNode; available: boolean }[]
+  )
+    .filter((connector) => connector.available)
+    .map(({ available: _available, ...connector }) => ({
+      ...connector,
+      enabled: mcpSettings.connectorEnabled[connector.id],
+    }));
+
+  React.useEffect(() => {
+    const availability: Record<ConnectorId, boolean> = {
+      github: githubConnected,
+      gitlab: gitlabConnected,
+      vercel: vercelConnected,
+      netlify: netlifyConnected,
+      supabase: supabaseConnected,
+      browserUseCloud: browserUseCloudAvailable,
+    };
+
+    for (const [connector, available] of Object.entries(availability) as [ConnectorId, boolean][]) {
+      if (!available && mcpSettings.connectorEnabled[connector]) {
+        setConnectorEnabled(connector, false);
+      }
+    }
+  }, [
+    githubConnected,
+    gitlabConnected,
+    vercelConnected,
+    netlifyConnected,
+    browserUseCloudAvailable,
+    mcpSettings.connectorEnabled.github,
+    mcpSettings.connectorEnabled,
+    setConnectorEnabled,
+    supabaseConnected,
+  ]);
+
   return (
     <div
       className={classNames(
@@ -109,7 +200,7 @@ export const ChatBox: React.FC<ChatBoxProps> = (props) => {
           {() => (
             <div className={props.isModelSettingsCollapsed ? 'hidden' : ''}>
               <ModelSelector
-                key={props.provider?.name + ':' + props.modelList.length}
+                key={props.provider?.name}
                 model={props.model}
                 setModel={props.setModel}
                 modelList={props.modelList}
@@ -262,51 +353,126 @@ export const ChatBox: React.FC<ChatBoxProps> = (props) => {
         </ClientOnly>
         <div className="flex justify-between items-center text-sm p-4 pt-2">
           <div className="flex gap-1 items-center">
-            <ColorSchemeDialog designScheme={props.designScheme} setDesignScheme={props.setDesignScheme} />
-            <McpTools />
-            <IconButton title="Upload file" className="transition-all" onClick={() => props.handleFileUpload()}>
-              <div className="i-ph:paperclip text-xl"></div>
-            </IconButton>
-            <WebSearch onSearchResult={(result) => props.onWebSearchResult?.(result)} disabled={props.isStreaming} />
-            <IconButton
-              title="Enhance prompt"
-              disabled={props.input.length === 0 || props.enhancingPrompt}
-              className={classNames('transition-all', props.enhancingPrompt ? 'opacity-100' : '')}
-              onClick={() => {
-                props.enhancePrompt?.();
-                toast.success('Prompt enhanced!');
-              }}
-            >
-              {props.enhancingPrompt ? (
-                <div className="i-svg-spinners:90-ring-with-bg text-bolt-elements-loader-progress text-xl animate-spin"></div>
-              ) : (
-                <div className="i-bolt:stars text-xl"></div>
+            <ClientOnly>
+              {() => (
+                <AttachmentMenu
+                  onAttachFile={() => props.handleFileUpload()} // Opens image file picker (image/* only)
+                  onOpenDesignDialog={() => {
+                    /*
+                     * Trigger the design dialog by programmatically clicking the hidden button
+                     * This is a workaround since ColorSchemeDialog manages its own state
+                     */
+                    const designButton = document.querySelector('[title="Design Palette"]') as HTMLButtonElement;
+                    designButton?.click();
+                  }}
+                  onEnhancePrompt={() => {
+                    props.enhancePrompt?.();
+                  }}
+                  connectors={connectors}
+                  onConnectorEnabledChange={setConnectorEnabled}
+                  onOpenMcpTools={() => setIsMcpToolsOpen(true)}
+                  mcpToolsInitialized={mcpToolsInitialized}
+                  webSearchEnabled={mcpSettings.webSearchEnabled}
+                  onWebSearchEnabledChange={setWebSearchEnabled}
+                  enhancingPrompt={props.enhancingPrompt}
+                  isEnhanceDisabled={props.input.length === 0 || props.enhancingPrompt}
+                />
               )}
-            </IconButton>
-
+            </ClientOnly>
+            <ClientOnly>{() => <ToolAccessMenu />}</ClientOnly>
+            {/* Hidden components for programmatic access from menu */}
+            <div className="hidden">
+              <ColorSchemeDialog designScheme={props.designScheme} setDesignScheme={props.setDesignScheme} />
+              <SupabaseConnection />
+            </div>
+            <McpTools open={isMcpToolsOpen} onOpenChange={setIsMcpToolsOpen} />
+            <DropdownMenu.Root>
+              <DropdownMenu.Trigger asChild>
+                <button
+                  type="button"
+                  title={props.chatMode === 'discuss' ? 'Discuss Mode' : 'Agent Mode'}
+                  className={classNames(
+                    'transition-all flex items-center gap-1 rounded-md px-1.5 py-1 text-xs',
+                    props.chatMode === 'discuss'
+                      ? 'bg-bolt-elements-item-backgroundAccent text-bolt-elements-item-contentAccent'
+                      : props.agentMode
+                        ? 'bg-bolt-elements-item-backgroundAccent text-bolt-elements-item-contentAccent'
+                        : 'bg-bolt-elements-item-backgroundDefault text-bolt-elements-item-contentDefault hover:bg-bolt-elements-item-backgroundActive',
+                  )}
+                >
+                  {props.chatMode === 'discuss' ? (
+                    <>
+                      <div className="i-ph:chats text-lg" />
+                      <span>Discuss</span>
+                    </>
+                  ) : (
+                    <>
+                      <div className="i-ph:robot text-lg" />
+                      <span>Agent</span>
+                    </>
+                  )}
+                  <div className="i-ph:caret-down text-sm" />
+                </button>
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.Content
+                  className={classNames(
+                    'min-w-[160px] rounded-lg p-1',
+                    'bg-bolt-elements-background-depth-2',
+                    'border border-bolt-elements-borderColor',
+                    'shadow-lg',
+                    'z-50',
+                  )}
+                  sideOffset={5}
+                  align="start"
+                >
+                  <DropdownMenu.Item
+                    className={classNames(
+                      'flex items-center gap-2 px-3 py-2 rounded-md text-sm cursor-pointer',
+                      'text-bolt-elements-textPrimary',
+                      'hover:bg-bolt-elements-item-backgroundActive',
+                      'focus:outline-none',
+                      props.chatMode === 'build' && props.agentMode && 'bg-bolt-elements-item-backgroundAccent',
+                    )}
+                    onSelect={() => {
+                      props.setChatMode?.('build');
+                      props.setAgentMode?.(true);
+                    }}
+                  >
+                    <div className="i-ph:robot text-lg" />
+                    <div className="flex flex-col">
+                      <span>Agent</span>
+                      <span className="text-xs text-bolt-elements-textSecondary">Plans & uses tools</span>
+                    </div>
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item
+                    className={classNames(
+                      'flex items-center gap-2 px-3 py-2 rounded-md text-sm cursor-pointer',
+                      'text-bolt-elements-textPrimary',
+                      'hover:bg-bolt-elements-item-backgroundActive',
+                      'focus:outline-none',
+                      props.chatMode === 'discuss' && 'bg-bolt-elements-item-backgroundAccent',
+                    )}
+                    onSelect={() => {
+                      props.setChatMode?.('discuss');
+                      props.setAgentMode?.(false);
+                    }}
+                  >
+                    <div className="i-ph:chats text-lg" />
+                    <div className="flex flex-col">
+                      <span>Discuss</span>
+                      <span className="text-xs text-bolt-elements-textSecondary">Chat without tools</span>
+                    </div>
+                  </DropdownMenu.Item>
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
             <SpeechRecognitionButton
               isListening={props.isListening}
               onStart={props.startListening}
               onStop={props.stopListening}
               disabled={props.isStreaming}
             />
-            {props.chatStarted && (
-              <IconButton
-                title="Discuss"
-                className={classNames(
-                  'transition-all flex items-center gap-1 px-1.5',
-                  props.chatMode === 'discuss'
-                    ? '!bg-bolt-elements-item-backgroundAccent !text-bolt-elements-item-contentAccent'
-                    : 'bg-bolt-elements-item-backgroundDefault text-bolt-elements-item-contentDefault',
-                )}
-                onClick={() => {
-                  props.setChatMode?.(props.chatMode === 'discuss' ? 'build' : 'discuss');
-                }}
-              >
-                <div className={`i-ph:chats text-xl`} />
-                {props.chatMode === 'discuss' ? <span>Discuss</span> : <span />}
-              </IconButton>
-            )}
             <IconButton
               title="Model Settings"
               className={classNames('transition-all flex items-center gap-1', {
@@ -319,16 +485,15 @@ export const ChatBox: React.FC<ChatBoxProps> = (props) => {
               disabled={!props.providerList || props.providerList.length === 0}
             >
               <div className={`i-ph:caret-${props.isModelSettingsCollapsed ? 'right' : 'down'} text-lg`} />
-              {props.isModelSettingsCollapsed ? <span className="text-xs">{props.model}</span> : <span />}
+              {props.isModelSettingsCollapsed ? (
+                <span className="text-xs" title={props.model}>
+                  {props.model && props.model.length > 25 ? `${props.model.slice(0, 22)}...` : props.model}
+                </span>
+              ) : (
+                <span />
+              )}
             </IconButton>
           </div>
-          {props.input.length > 3 ? (
-            <div className="text-xs text-bolt-elements-textTertiary">
-              Use <kbd className="kdb px-1.5 py-0.5 rounded bg-bolt-elements-background-depth-2">Shift</kbd> +{' '}
-              <kbd className="kdb px-1.5 py-0.5 rounded bg-bolt-elements-background-depth-2">Return</kbd> a new line
-            </div>
-          ) : null}
-          <SupabaseConnection />
           <ExpoQrModal open={props.qrModalOpen} onClose={() => props.setQrModalOpen(false)} />
         </div>
       </div>

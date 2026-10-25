@@ -1,39 +1,61 @@
-import type { ActionFunctionArgs, LoaderFunctionArgs } from '@remix-run/cloudflare';
+import type { ActionFunctionArgs, LoaderFunctionArgs } from 'react-router';
 
 // Rate limiting store (in-memory for serverless environments)
 const rateLimitStore = new Map<string, { count: number; resetTime: number }>();
 
 // Rate limit configuration
-const RATE_LIMITS = {
-  // General API endpoints
-  '/api/*': { windowMs: 15 * 60 * 1000, maxRequests: 100 }, // 100 requests per 15 minutes
-
-  // LLM API (more restrictive)
-  '/api/llmcall': { windowMs: 60 * 1000, maxRequests: 10 }, // 10 requests per minute
+const RATE_LIMITS: Record<string, { windowMs: number; maxRequests: number }> = {
+  // LLM streaming and call APIs (most restrictive)
+  '/api/chat': { windowMs: 60 * 1000, maxRequests: 60 }, // 60 requests per minute
+  '/api/llmcall': { windowMs: 60 * 1000, maxRequests: 30 }, // 30 requests per minute
 
   // GitHub API endpoints
   '/api/github-*': { windowMs: 60 * 1000, maxRequests: 30 }, // 30 requests per minute
 
   // Netlify API endpoints
   '/api/netlify-*': { windowMs: 60 * 1000, maxRequests: 20 }, // 20 requests per minute
+
+  // General API endpoints fallback
+  '/api/*': { windowMs: 15 * 60 * 1000, maxRequests: 100 }, // 100 requests per 15 minutes
 };
 
 /**
  * Rate limiting middleware
  */
-export function checkRateLimit(request: Request, endpoint: string): { allowed: boolean; resetTime?: number } {
-  const clientIP = getClientIP(request);
+export function checkRateLimit(
+  request: Request,
+  endpoint: string,
+  context?: unknown,
+): { allowed: boolean; resetTime?: number; unavailable?: boolean } {
+  const clientIP = getTrustedClientIP(request, context);
+
+  if (!clientIP) {
+    return { allowed: false, unavailable: true };
+  }
+
   const key = `${clientIP}:${endpoint}`;
 
-  // Find matching rate limit rule
-  const rule = Object.entries(RATE_LIMITS).find(([pattern]) => {
-    if (pattern.endsWith('/*')) {
-      const basePattern = pattern.slice(0, -2);
-      return endpoint.startsWith(basePattern);
-    }
+  // Find matching rate limit rule: exact match first, then specific prefix, then generic wildcard
+  const entries = Object.entries(RATE_LIMITS);
 
-    return endpoint === pattern;
-  });
+  const rule =
+    entries.find(([pattern]) => pattern === endpoint) ||
+    entries.find(([pattern]) => {
+      if (pattern.endsWith('*') && !pattern.endsWith('/*')) {
+        const basePattern = pattern.slice(0, -1);
+        return endpoint.startsWith(basePattern);
+      }
+
+      return false;
+    }) ||
+    entries.find(([pattern]) => {
+      if (pattern.endsWith('/*')) {
+        const basePattern = pattern.slice(0, -2);
+        return endpoint.startsWith(basePattern);
+      }
+
+      return false;
+    });
 
   if (!rule) {
     return { allowed: true }; // No rate limit for this endpoint
@@ -41,17 +63,21 @@ export function checkRateLimit(request: Request, endpoint: string): { allowed: b
 
   const [, config] = rule;
   const now = Date.now();
-  const windowStart = now - config.windowMs;
 
-  // Clean up old entries
-  for (const [storedKey, data] of rateLimitStore.entries()) {
-    if (data.resetTime < windowStart) {
-      rateLimitStore.delete(storedKey);
+  // Clean up old entries periodically to avoid O(N) cost on every single request
+  if (rateLimitStore.size > 200) {
+    for (const [storedKey, data] of rateLimitStore.entries()) {
+      if (data.resetTime < now) {
+        rateLimitStore.delete(storedKey);
+      }
     }
   }
 
   // Get or create rate limit data
-  const rateLimitData = rateLimitStore.get(key) || { count: 0, resetTime: now + config.windowMs };
+  const existing = rateLimitStore.get(key);
+
+  const rateLimitData =
+    existing && existing.resetTime > now ? existing : { count: 0, resetTime: now + config.windowMs };
 
   if (rateLimitData.count >= config.maxRequests) {
     return { allowed: false, resetTime: rateLimitData.resetTime };
@@ -67,14 +93,51 @@ export function checkRateLimit(request: Request, endpoint: string): { allowed: b
 /**
  * Get client IP address from request
  */
-function getClientIP(request: Request): string {
-  // Try various headers that might contain the real IP
-  const forwardedFor = request.headers.get('x-forwarded-for');
-  const realIP = request.headers.get('x-real-ip');
-  const cfConnectingIP = request.headers.get('cf-connecting-ip');
+export function getTrustedClientIP(request: Request, context?: unknown): string | undefined {
+  const runtimeContext = context as
+    { clientAddress?: string; cloudflare?: { ctx?: { waitUntil?: unknown } } } | undefined;
 
-  // Return the first available IP or a fallback
-  return cfConnectingIP || realIP || forwardedFor?.split(',')[0]?.trim() || 'unknown';
+  const adapterClientAddress = runtimeContext?.clientAddress;
+
+  if (adapterClientAddress) {
+    return normalizeIpAddress(adapterClientAddress);
+  }
+
+  const cloudflare = runtimeContext?.cloudflare;
+
+  if (cloudflare?.ctx && typeof cloudflare.ctx.waitUntil === 'function') {
+    return normalizeIpAddress(request.headers.get('cf-connecting-ip'));
+  }
+
+  /*
+   * Only trust this header when an operator has configured a reverse proxy to
+   * overwrite it and blocked direct access to the application origin.
+   */
+  if (process.env.BUG_REPORT_TRUSTED_IP_HEADER === 'x-real-ip') {
+    return normalizeIpAddress(request.headers.get('x-real-ip'));
+  }
+
+  return undefined;
+}
+
+function normalizeIpAddress(value: string | null): string | undefined {
+  const address = value?.trim();
+
+  if (!address || address.includes(',')) {
+    return undefined;
+  }
+
+  const ipv4 = address.split('.');
+
+  if (ipv4.length === 4 && ipv4.every((part) => /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255)) {
+    return address;
+  }
+
+  try {
+    return new URL(`http://[${address}]/`).hostname.slice(1, -1);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -193,7 +256,14 @@ export function withSecurity<T extends (args: ActionFunctionArgs | LoaderFunctio
 
     // Apply rate limiting
     if (options.rateLimit !== false) {
-      const rateLimitResult = checkRateLimit(request, endpoint);
+      const rateLimitResult = checkRateLimit(request, endpoint, args.context);
+
+      if (rateLimitResult.unavailable) {
+        return new Response('Rate limiting requires trusted client IP configuration', {
+          status: 503,
+          headers: createSecurityHeaders(),
+        });
+      }
 
       if (!rateLimitResult.allowed) {
         return new Response('Rate limit exceeded', {
@@ -223,6 +293,49 @@ export function withSecurity<T extends (args: ActionFunctionArgs | LoaderFunctio
         headers: responseHeaders,
       });
     } catch (error) {
+      /*
+       * `throw new Response(...)` is React Router's control-flow idiom for
+       * "stop here with this response". Several routes use it for 400s, and this
+       * catch used to swallow every one of them into a 500 — the route's chosen
+       * status was silently discarded.
+       *
+       * Checked FIRST, before the ApiError shape test. A Response also carries a
+       * numeric `status` and an object `body`, so it matches that shape too, and
+       * serializing its body would turn the response into a stream of `{}`.
+       */
+      if (error instanceof Response) {
+        const responseHeaders = new Headers(error.headers);
+
+        Object.entries(createSecurityHeaders()).forEach(([key, value]) => {
+          responseHeaders.set(key, value);
+        });
+
+        return new Response(error.body, {
+          status: error.status,
+          statusText: error.statusText,
+          headers: responseHeaders,
+        });
+      }
+
+      /*
+       * A route that rejected the request on purpose carries its own status,
+       * retryability and message. Collapsing those into 500 is how a malformed
+       * request ends up presented to the user as a server fault, and it is what
+       * made the client fall back to its generic "Request Failed" alert.
+       *
+       * Checked structurally rather than by importing ApiError, so this module
+       * stays dependency-free for the routes that use it as a rate limiter.
+       */
+      if (isTypedApiError(error)) {
+        return new Response(JSON.stringify(error.body), {
+          status: error.status,
+          headers: {
+            ...createSecurityHeaders(),
+            'Content-Type': 'application/json',
+          },
+        });
+      }
+
       console.error('Security-wrapped handler error:', error);
 
       const errorMessage = sanitizeErrorMessage(error, process.env.NODE_ENV === 'development');
@@ -242,4 +355,29 @@ export function withSecurity<T extends (args: ActionFunctionArgs | LoaderFunctio
       );
     }
   };
+}
+
+/**
+ * Structural check for an ApiError.
+ *
+ * Deliberately avoids importing the class: security.ts is imported by routes
+ * that have no business pulling in the model-facing error module, and this keeps
+ * the check cheap and cycle-free.
+ *
+ * Note this tests the *shape*, not `name`. Subclasses set their own name
+ * (`ValidationError`, `PayloadTooLargeError`, `RequestTimeoutError`), so a
+ * `name === 'ApiError'` test would reject exactly the errors carrying the most
+ * precise status — the ones it exists to preserve. `body` + numeric `status` is
+ * what actually distinguishes them, since a plain Error has neither.
+ */
+function isTypedApiError(error: unknown): error is { status: number; body: unknown } {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'body' in error &&
+    'status' in error &&
+    typeof (error as { status?: unknown }).status === 'number' &&
+    typeof (error as { body?: unknown }).body === 'object' &&
+    (error as { body?: unknown }).body !== null
+  );
 }

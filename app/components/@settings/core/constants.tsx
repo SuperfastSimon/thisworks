@@ -1,5 +1,18 @@
+import {
+  User,
+  Settings,
+  Bell,
+  Star,
+  Database,
+  Cloud,
+  Laptop,
+  GitBranch,
+  Wrench,
+  List,
+  Plug,
+  Blocks,
+} from 'lucide-react';
 import type { TabType } from './types';
-import { User, Settings, Bell, Star, Database, Cloud, Laptop, Github, Wrench, List } from 'lucide-react';
 
 // GitLab icon component
 const GitLabIcon = () => (
@@ -46,23 +59,26 @@ export const TAB_ICONS: Record<TabType, React.ComponentType<{ className?: string
   data: Database,
   'cloud-providers': Cloud,
   'local-providers': Laptop,
-  github: Github,
+  connectors: Plug,
+  github: GitBranch,
   gitlab: () => <GitLabIcon />,
   netlify: () => <NetlifyIcon />,
   vercel: () => <VercelIcon />,
   supabase: () => <SupabaseIcon />,
   'event-logs': List,
   mcp: Wrench,
+  plugins: Blocks,
 };
 
 export const TAB_LABELS: Record<TabType, string> = {
   profile: 'Profile',
-  settings: 'Settings',
+  settings: 'Preferences',
   notifications: 'Notifications',
   features: 'Features',
   data: 'Data Management',
   'cloud-providers': 'Cloud Providers',
   'local-providers': 'Local Providers',
+  connectors: 'Connectors',
   github: 'GitHub',
   gitlab: 'GitLab',
   netlify: 'Netlify',
@@ -70,16 +86,18 @@ export const TAB_LABELS: Record<TabType, string> = {
   supabase: 'Supabase',
   'event-logs': 'Event Logs',
   mcp: 'MCP Servers',
+  plugins: 'Plugins',
 };
 
 export const TAB_DESCRIPTIONS: Record<TabType, string> = {
   profile: 'Manage your profile and account settings',
-  settings: 'Configure application preferences',
+  settings: 'Customize application settings and preferences',
   notifications: 'View and manage your notifications',
   features: 'Explore new and upcoming features',
   data: 'Manage your data and storage',
   'cloud-providers': 'Configure cloud AI providers and models',
   'local-providers': 'Configure local AI providers and models',
+  connectors: 'Connect and manage your development tools and services',
   github: 'Connect and manage GitHub integration',
   gitlab: 'Connect and manage GitLab integration',
   netlify: 'Configure Netlify deployment settings',
@@ -87,22 +105,28 @@ export const TAB_DESCRIPTIONS: Record<TabType, string> = {
   supabase: 'Setup Supabase database connection',
   'event-logs': 'View system events and logs',
   mcp: 'Configure MCP (Model Context Protocol) servers',
+  plugins: 'Discover, install, and manage plugins',
 };
 
 export const DEFAULT_TAB_CONFIG = [
   // User Window Tabs (Always visible by default)
-  { id: 'features', visible: true, window: 'user' as const, order: 0 },
-  { id: 'data', visible: true, window: 'user' as const, order: 1 },
-  { id: 'cloud-providers', visible: true, window: 'user' as const, order: 2 },
-  { id: 'local-providers', visible: true, window: 'user' as const, order: 3 },
-  { id: 'github', visible: true, window: 'user' as const, order: 4 },
-  { id: 'gitlab', visible: true, window: 'user' as const, order: 5 },
-  { id: 'netlify', visible: true, window: 'user' as const, order: 6 },
-  { id: 'vercel', visible: true, window: 'user' as const, order: 7 },
-  { id: 'supabase', visible: true, window: 'user' as const, order: 8 },
-  { id: 'notifications', visible: true, window: 'user' as const, order: 9 },
-  { id: 'event-logs', visible: true, window: 'user' as const, order: 10 },
-  { id: 'mcp', visible: true, window: 'user' as const, order: 11 },
+  { id: 'settings', visible: true, window: 'user' as const, order: 0 },
+  { id: 'features', visible: true, window: 'user' as const, order: 1 },
+  { id: 'data', visible: true, window: 'user' as const, order: 2 },
+  { id: 'cloud-providers', visible: true, window: 'user' as const, order: 3 },
+  { id: 'local-providers', visible: true, window: 'user' as const, order: 4 },
+  { id: 'connectors', visible: true, window: 'user' as const, order: 5 },
+  { id: 'notifications', visible: true, window: 'user' as const, order: 6 },
+  { id: 'event-logs', visible: true, window: 'user' as const, order: 7 },
+  { id: 'mcp', visible: true, window: 'user' as const, order: 8 },
+  { id: 'plugins', visible: true, window: 'user' as const, order: 9 },
+
+  // Legacy individual connector tabs (hidden by default, kept for backward compatibility)
+  { id: 'github', visible: false, window: 'user' as const, order: 10 },
+  { id: 'gitlab', visible: false, window: 'user' as const, order: 11 },
+  { id: 'netlify', visible: false, window: 'user' as const, order: 12 },
+  { id: 'vercel', visible: false, window: 'user' as const, order: 13 },
+  { id: 'supabase', visible: false, window: 'user' as const, order: 14 },
 
   // User Window Tabs (In dropdown, initially hidden)
 ];

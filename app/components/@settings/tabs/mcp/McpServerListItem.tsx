@@ -5,13 +5,6 @@ type ParameterProperty = {
   description?: string;
 };
 
-type ToolParameters = {
-  jsonSchema: {
-    properties?: Record<string, ParameterProperty>;
-    required?: string[];
-  };
-};
-
 type McpToolProps = {
   toolName: string;
   toolSchema: Tool;
@@ -22,8 +15,22 @@ export default function McpServerListItem({ toolName, toolSchema }: McpToolProps
     return null;
   }
 
-  const parameters = (toolSchema.parameters as ToolParameters)?.jsonSchema.properties || {};
-  const requiredParams = (toolSchema.parameters as ToolParameters)?.jsonSchema.required || [];
+  /*
+   * MCP tools arrive over JSON. SDK schema functions and symbols do not survive
+   * serialization, so read the serialized JSON Schema instead of calling asSchema.
+   */
+  type ParameterSchema = { properties?: Record<string, ParameterProperty>; required?: string[] };
+
+  const inputSchema = toolSchema.inputSchema as ParameterSchema & { jsonSchema?: ParameterSchema };
+  const resolved = inputSchema?.jsonSchema ?? inputSchema;
+  const parameters = resolved?.properties || {};
+  const requiredParams = resolved?.required || [];
+
+  /*
+   * Tool is a four-way union in v5 and `description` may be a function of the
+   * call context, which cannot be rendered directly.
+   */
+  const description = typeof toolSchema.description === 'string' ? toolSchema.description : undefined;
 
   return (
     <div className="mt-2 ml-4 p-3 rounded-md bg-bolt-elements-background-depth-2 text-xs">
@@ -32,7 +39,7 @@ export default function McpServerListItem({ toolName, toolSchema }: McpToolProps
           {toolName}
         </h3>
 
-        <p className="text-bolt-elements-textSecondary">{toolSchema.description || 'No description available'}</p>
+        <p className="text-bolt-elements-textSecondary">{description || 'No description available'}</p>
 
         {Object.keys(parameters).length > 0 && (
           <div className="mt-2.5">

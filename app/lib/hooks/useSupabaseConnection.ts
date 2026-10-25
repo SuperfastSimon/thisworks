@@ -1,6 +1,6 @@
+import { useStore } from '@nanostores/react';
 import { useEffect, useState } from 'react';
 import { toast } from 'react-toastify';
-import { useStore } from '@nanostores/react';
 import { logStore } from '~/lib/stores/logs';
 import {
   supabaseConnection,
@@ -12,7 +12,7 @@ import {
   initializeSupabaseConnection,
 } from '~/lib/stores/supabase';
 
-export function useSupabaseConnection() {
+export function useSupabaseConnection({ enabled = true }: { enabled?: boolean } = {}) {
   const connection = useStore(supabaseConnection);
   const connecting = useStore(isConnecting);
   const fetchingStats = useStore(isFetchingStats);
@@ -21,6 +21,10 @@ export function useSupabaseConnection() {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+
     const initConnection = async () => {
       console.log('useSupabaseConnection: Initializing connection...');
 
@@ -58,8 +62,8 @@ export function useSupabaseConnection() {
       }
     };
 
-    initConnection();
-  }, []);
+    void initConnection();
+  }, [enabled]);
 
   const handleConnect = async () => {
     isConnecting.set(true);
@@ -114,6 +118,7 @@ export function useSupabaseConnection() {
 
   const selectProject = async (projectId: string) => {
     const currentState = supabaseConnection.get();
+
     let projectData = undefined;
 
     if (projectId && currentState.stats?.projects) {

@@ -1,8 +1,8 @@
+import { createDeepSeek } from '@ai-sdk/deepseek';
+import type { LanguageModel } from 'ai';
 import { BaseProvider } from '~/lib/modules/llm/base-provider';
 import type { ModelInfo } from '~/lib/modules/llm/types';
 import type { IProviderSetting } from '~/types/model';
-import type { LanguageModelV1 } from 'ai';
-import { createDeepSeek } from '@ai-sdk/deepseek';
 
 export default class DeepseekProvider extends BaseProvider {
   name = 'Deepseek';
@@ -13,6 +13,20 @@ export default class DeepseekProvider extends BaseProvider {
   };
 
   staticModels: ModelInfo[] = [
+    {
+      name: 'deepseek-v4-pro',
+      label: 'DeepSeek V4 Pro',
+      provider: 'Deepseek',
+      maxTokenAllowed: 1000000,
+      maxCompletionTokens: 384000,
+    },
+    {
+      name: 'deepseek-v4-flash',
+      label: 'DeepSeek V4 Flash',
+      provider: 'Deepseek',
+      maxTokenAllowed: 1000000,
+      maxCompletionTokens: 384000,
+    },
     {
       name: 'deepseek-coder',
       label: 'Deepseek-Coder',
@@ -91,8 +105,8 @@ export default class DeepseekProvider extends BaseProvider {
             name: m.id,
             label: `${m.id} (Dynamic)`,
             provider: this.name,
-            maxTokenAllowed: 64000, // Default, adjust per model if available
-            maxCompletionTokens: 8192,
+            maxTokenAllowed: m.id?.startsWith('deepseek-v4') ? 1000000 : 64000,
+            maxCompletionTokens: m.id?.startsWith('deepseek-v4') ? 384000 : 8192,
           })) || [];
 
       return dynamicModels;
@@ -107,7 +121,7 @@ export default class DeepseekProvider extends BaseProvider {
     serverEnv: Env;
     apiKeys?: Record<string, string>;
     providerSettings?: Record<string, IProviderSetting>;
-  }): LanguageModelV1 {
+  }): LanguageModel {
     const { model, serverEnv, apiKeys, providerSettings } = options;
 
     const { apiKey } = this.getProviderBaseUrlAndKey({
@@ -126,8 +140,12 @@ export default class DeepseekProvider extends BaseProvider {
       apiKey,
     });
 
-    return deepseek(model, {
-      // simulateStreaming: true,
-    });
+    /*
+     * v4's callable took a second settings argument and supported
+     * `simulateStreaming`. Both are gone in v3: the callable is 1-arg and
+     * `simulateStreaming` no longer exists in the package at all, so the
+     * commented-out flag was permanently dead rather than merely disabled.
+     */
+    return deepseek.chat(model);
   }
 }

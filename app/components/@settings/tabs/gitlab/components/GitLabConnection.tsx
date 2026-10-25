@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
 import { motion } from 'framer-motion';
+import React, { useState } from 'react';
 import { toast } from 'react-toastify';
-import { classNames } from '~/utils/classNames';
 import { Button } from '~/components/ui/Button';
 import { useGitLabConnection } from '~/lib/hooks';
+import { classNames } from '~/utils/classNames';
 
 interface ConnectionTestResult {
   status: 'success' | 'error' | 'testing';
@@ -14,10 +14,17 @@ interface ConnectionTestResult {
 interface GitLabConnectionProps {
   connectionTest: ConnectionTestResult | null;
   onTestConnection: () => void;
+  fetchStatsOnConnect?: boolean;
 }
 
-export default function GitLabConnection({ connectionTest, onTestConnection }: GitLabConnectionProps) {
-  const { isConnected, isConnecting, connection, error, connect, disconnect } = useGitLabConnection();
+export default function GitLabConnection({
+  connectionTest,
+  onTestConnection,
+  fetchStatsOnConnect = true,
+}: GitLabConnectionProps) {
+  const { isConnected, isConnecting, connection, error, connect, disconnect } = useGitLabConnection({
+    fetchStatsOnConnect,
+  });
 
   const [token, setToken] = useState('');
   const [gitlabUrl, setGitlabUrl] = useState('https://gitlab.com');
@@ -26,7 +33,7 @@ export default function GitLabConnection({ connectionTest, onTestConnection }: G
     event.preventDefault();
 
     console.log('GitLab connect attempt:', {
-      token: token ? `${token.substring(0, 10)}...` : 'empty',
+      hasToken: Boolean(token),
       gitlabUrl,
       tokenLength: token.length,
     });
@@ -180,9 +187,7 @@ export default function GitLabConnection({ connectionTest, onTestConnection }: G
                 </button>
                 <button
                   type="button"
-                  onClick={() =>
-                    console.log('Manual test:', { token: token ? `${token.substring(0, 10)}...` : 'empty', gitlabUrl })
-                  }
+                  onClick={() => console.log('Manual test:', { hasToken: Boolean(token), gitlabUrl })}
                   className="px-4 py-2 rounded-lg text-sm bg-gray-500 text-white hover:bg-gray-600"
                 >
                   Test Values

@@ -1,10 +1,10 @@
 import { atom, map } from 'nanostores';
-import { PROVIDER_LIST } from '~/utils/constants';
-import type { IProviderConfig } from '~/types/model';
-import type { TabVisibilityConfig, TabWindowConfig, UserTabConfig } from '~/components/@settings/core/types';
-import { DEFAULT_TAB_CONFIG } from '~/components/@settings/core/constants';
-import { toggleTheme } from './theme';
 import { create } from 'zustand';
+import { toggleTheme } from './theme';
+import { DEFAULT_TAB_CONFIG } from '~/components/@settings/core/constants';
+import type { TabVisibilityConfig, TabWindowConfig, UserTabConfig } from '~/components/@settings/core/types';
+import type { IProviderConfig } from '~/types/model';
+import { PROVIDER_LIST } from '~/utils/constants';
 
 export interface Shortcut {
   key: string;
@@ -86,13 +86,16 @@ const fetchConfiguredProviders = async (): Promise<ConfiguredProvider[]> => {
 const getInitialProviderSettings = (): ProviderSetting => {
   const initialSettings: ProviderSetting = {};
 
+  // Default enabled providers (only these 4 are enabled by default)
+  const DEFAULT_ENABLED_PROVIDERS = ['OpenRouter', 'Anthropic', 'OpenAI', 'Google'];
+
   // Start with default settings
   PROVIDER_LIST.forEach((provider) => {
     initialSettings[provider.name] = {
       ...provider,
       settings: {
-        // Local providers should be disabled by default
-        enabled: !LOCAL_PROVIDERS.includes(provider.name),
+        // Only default providers are enabled, all others are disabled by default
+        enabled: DEFAULT_ENABLED_PROVIDERS.includes(provider.name),
       },
     };
   });
@@ -349,9 +352,14 @@ const getInitialTabConfiguration = (): TabWindowConfig => {
     }
 
     // Ensure proper typing of loaded configuration
-    return {
-      userTabs: parsed.userTabs.filter((tab: TabVisibilityConfig): tab is UserTabConfig => tab.window === 'user'),
-    };
+    const savedTabs = parsed.userTabs.filter(
+      (tab: TabVisibilityConfig): tab is UserTabConfig => tab.window === 'user' && Boolean(tab.id),
+    );
+
+    const savedIds = new Set(savedTabs.map((tab: UserTabConfig) => tab.id));
+    const missingDefaults = defaultConfig.userTabs.filter((tab) => !savedIds.has(tab.id));
+
+    return { userTabs: [...savedTabs, ...missingDefaults] };
   } catch (error) {
     console.warn('Failed to parse tab configuration:', error);
     return defaultConfig;

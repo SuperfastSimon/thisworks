@@ -1,8 +1,8 @@
+import { createAmazonBedrock } from '@ai-sdk/amazon-bedrock';
+import type { LanguageModel } from 'ai';
 import { BaseProvider } from '~/lib/modules/llm/base-provider';
 import type { ModelInfo } from '~/lib/modules/llm/types';
-import type { LanguageModelV1 } from 'ai';
 import type { IProviderSetting } from '~/types/model';
-import { createAmazonBedrock } from '@ai-sdk/amazon-bedrock';
 
 interface AWSBedRockConfig {
   region: string;
@@ -27,52 +27,34 @@ export default class AmazonBedrockProvider extends BaseProvider {
       maxTokenAllowed: 200000,
     },
     {
-      name: 'anthropic.claude-3-5-haiku-20241022-v1:0',
-      label: 'Claude 3.5 Haiku (Bedrock)',
-      provider: 'AmazonBedrock',
-      maxTokenAllowed: 200000,
-    },
-    {
       name: 'anthropic.claude-3-5-sonnet-20240620-v1:0',
       label: 'Claude 3.5 Sonnet (Bedrock)',
       provider: 'AmazonBedrock',
-      maxTokenAllowed: 200000,
+      maxTokenAllowed: 4096,
     },
     {
       name: 'anthropic.claude-3-sonnet-20240229-v1:0',
       label: 'Claude 3 Sonnet (Bedrock)',
       provider: 'AmazonBedrock',
-      maxTokenAllowed: 200000,
+      maxTokenAllowed: 4096,
     },
     {
       name: 'anthropic.claude-3-haiku-20240307-v1:0',
       label: 'Claude 3 Haiku (Bedrock)',
       provider: 'AmazonBedrock',
-      maxTokenAllowed: 200000,
-    },
-    {
-      name: 'amazon.nova-premier-v1:0',
-      label: 'Amazon Nova Premier (Bedrock)',
-      provider: 'AmazonBedrock',
-      maxTokenAllowed: 300000,
+      maxTokenAllowed: 4096,
     },
     {
       name: 'amazon.nova-pro-v1:0',
       label: 'Amazon Nova Pro (Bedrock)',
       provider: 'AmazonBedrock',
-      maxTokenAllowed: 300000,
+      maxTokenAllowed: 5120,
     },
     {
       name: 'amazon.nova-lite-v1:0',
       label: 'Amazon Nova Lite (Bedrock)',
       provider: 'AmazonBedrock',
-      maxTokenAllowed: 300000,
-    },
-    {
-      name: 'amazon.nova-micro-v1:0',
-      label: 'Amazon Nova Micro (Bedrock)',
-      provider: 'AmazonBedrock',
-      maxTokenAllowed: 128000,
+      maxTokenAllowed: 5120,
     },
     {
       name: 'mistral.mistral-large-2402-v1:0',
@@ -114,7 +96,7 @@ export default class AmazonBedrockProvider extends BaseProvider {
     serverEnv: any;
     apiKeys?: Record<string, string>;
     providerSettings?: Record<string, IProviderSetting>;
-  }): LanguageModelV1 {
+  }): LanguageModel {
     const { model, serverEnv, apiKeys, providerSettings } = options;
 
     const { apiKey } = this.getProviderBaseUrlAndKey({

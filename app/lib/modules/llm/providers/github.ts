@@ -1,8 +1,8 @@
+import { createOpenAI } from '@ai-sdk/openai';
+import type { LanguageModel } from 'ai';
 import { BaseProvider } from '~/lib/modules/llm/base-provider';
 import type { ModelInfo } from '~/lib/modules/llm/types';
 import type { IProviderSetting } from '~/types/model';
-import type { LanguageModelV1 } from 'ai';
-import { createOpenAI } from '@ai-sdk/openai';
 
 export default class GithubProvider extends BaseProvider {
   name = 'Github';
@@ -125,7 +125,7 @@ export default class GithubProvider extends BaseProvider {
     serverEnv: Env;
     apiKeys?: Record<string, string>;
     providerSettings?: Record<string, IProviderSetting>;
-  }): LanguageModelV1 {
+  }): LanguageModel {
     const { model, serverEnv, apiKeys, providerSettings } = options;
 
     console.log(`GitHub: Creating model instance for ${model}`);
@@ -143,7 +143,7 @@ export default class GithubProvider extends BaseProvider {
       throw new Error(`Missing API key for ${this.name} provider`);
     }
 
-    console.log(`GitHub: Using API key (first 8 chars): ${apiKey.substring(0, 8)}...`);
+    console.log('GitHub: Using configured API key');
 
     const openai = createOpenAI({
       baseURL: 'https://models.github.ai/inference',
@@ -152,6 +152,6 @@ export default class GithubProvider extends BaseProvider {
 
     console.log(`GitHub: Created OpenAI client, requesting model: ${model}`);
 
-    return openai(model);
+    return openai.chat(model);
   }
 }

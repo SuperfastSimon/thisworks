@@ -1,19 +1,39 @@
-import { convertToCoreMessages, streamText as _streamText, type Message } from 'ai';
+import { streamText as _streamText, type ModelMessage, type UIMessage } from 'ai';
+import { withAgentStreamDeadlines, withAgentToolCallRecovery } from './agent-stream';
 import { MAX_TOKENS, PROVIDER_COMPLETION_LIMITS, isReasoningModel, type FileMap } from './constants';
-import { getSystemPrompt } from '~/lib/common/prompts/prompts';
-import { DEFAULT_MODEL, DEFAULT_PROVIDER, MODIFICATIONS_TAG_NAME, PROVIDER_LIST, WORK_DIR } from '~/utils/constants';
-import type { IProviderSetting } from '~/types/model';
-import { PromptLibrary } from '~/lib/common/prompt-library';
-import { allowedHTMLElements } from '~/utils/markdown';
-import { LLMManager } from '~/lib/modules/llm/manager';
-import { createScopedLogger } from '~/utils/logger';
+import { prepareModelMessages } from './model-messages';
+import { withDevelopmentCommentaryWorkstyle } from './prompt-workstyle';
 import { createFilesContext, extractPropertiesFromMessage } from './utils';
+import { PromptLibrary } from '~/lib/common/prompt-library';
 import { discussPrompt } from '~/lib/common/prompts/discuss-prompt';
+import { getSystemPrompt } from '~/lib/common/prompts/prompts';
+import { LLMManager } from '~/lib/modules/llm/manager';
+import { createMessage, getMessageText } from '~/lib/persistence/messageMigration';
 import type { DesignScheme } from '~/types/design-scheme';
+import type { IProviderSetting } from '~/types/model';
+import { DEFAULT_MODEL, DEFAULT_PROVIDER, MODIFICATIONS_TAG_NAME, PROVIDER_LIST, WORK_DIR } from '~/utils/constants';
+import { createScopedLogger } from '~/utils/logger';
+import { allowedHTMLElements } from '~/utils/markdown';
 
-export type Messages = Message[];
+export type Messages = UIMessage[];
 
-export interface StreamingOptions extends Omit<Parameters<typeof _streamText>[0], 'model'> {
+/*
+ * `prompt` and `messages` are mutually exclusive in v7's Prompt type, and
+ * Omit<> is non-distributive over a union, so deriving the whole options type
+ * from Parameters<> collapses that XOR and leaves `prompt` as
+ * `string | ModelMessage[] | undefined`. Subtracting them keeps the long tail
+ * tracking the installed SDK while letting this module own the prompt, which is
+ * the only place that builds it.
+ */
+type DerivedStreamOptions = Omit<
+  Parameters<typeof _streamText>[0],
+  'model' | 'messages' | 'prompt' | 'instructions' | 'system'
+>;
+
+export interface StreamingOptions extends DerivedStreamOptions {
+  messages: ModelMessage[];
+  system?: string;
+  onToolCallRetry?: () => void;
   supabaseConnection?: {
     isConnected: boolean;
     hasSelectedProject: boolean;
@@ -52,19 +72,34 @@ function sanitizeText(text: string): string {
 }
 
 export async function streamText(props: {
-  messages: Omit<Message, 'id'>[];
+  messages: Omit<UIMessage, 'id'>[];
   env?: Env;
-  options?: StreamingOptions;
+
+  /*
+   * `messages` is excluded because this module builds the prompt itself from
+   * the top-level `messages` prop; callers only supply the remaining options.
+   */
+  options?: Omit<StreamingOptions, 'messages'>;
   apiKeys?: Record<string, string>;
   files?: FileMap;
   providerSettings?: Record<string, IProviderSetting>;
+  model?: string;
+  provider?: string;
   promptId?: string;
   contextOptimization?: boolean;
   contextFiles?: FileMap;
   summary?: string;
   messageSliceId?: number;
   chatMode?: 'discuss' | 'build';
+  agentMode?: boolean;
   designScheme?: DesignScheme;
+
+  /*
+   * v7 returns a single stream. Callers that used to iterate result.fullStream
+   * alongside the merged UI stream must observe chunks here instead, otherwise
+   * two consumers race for the same stream.
+   */
+  onChunk?: (options: { chunk: unknown }) => void;
 }) {
   const {
     messages,
@@ -78,27 +113,57 @@ export async function streamText(props: {
     contextFiles,
     summary,
     chatMode,
+    agentMode,
     designScheme,
+    onChunk,
   } = props;
-  let currentModel = DEFAULT_MODEL;
-  let currentProvider = DEFAULT_PROVIDER.name;
+
+  let currentModel = props.model ?? DEFAULT_MODEL;
+  let currentProvider = props.provider ?? DEFAULT_PROVIDER.name;
+
   let processedMessages = messages.map((message) => {
-    const newMessage = { ...message };
+    const newMessage = { ...message } as Record<string, any>;
 
     if (message.role === 'user') {
-      const { model, provider, content } = extractPropertiesFromMessage(message);
-      currentModel = model;
-      currentProvider = provider;
-      newMessage.content = sanitizeText(content);
-    } else if (message.role == 'assistant') {
-      newMessage.content = sanitizeText(message.content);
+      const { model, provider } = extractPropertiesFromMessage(message);
+
+      if (!props.model) {
+        currentModel = model;
+      }
+
+      if (!props.provider) {
+        currentProvider = provider;
+      }
     }
 
-    // Sanitize all text parts in parts array, if present
-    if (Array.isArray(message.parts)) {
-      newMessage.parts = message.parts.map((part) =>
-        part.type === 'text' ? { ...part, text: sanitizeText(part.text) } : part,
-      );
+    /*
+     * Text is rebuilt through createMessage so it lands in both `content` and
+     * `parts`. convertToModelMessages reads only `parts` and dereferences
+     * `message.parts.some(...)` on its first statement, so a message left
+     * without parts is an immediate TypeError rather than a soft degradation.
+     * `data-*` parts are preserved rather than flattened away, because bolt
+     * reads annotations back off them.
+     */
+    const sanitizedParts = Array.isArray(message.parts)
+      ? message.parts.map((part) =>
+          part?.type === 'text' && typeof part.text === 'string' ? { ...part, text: sanitizeText(part.text) } : part,
+        )
+      : [];
+
+    if (sanitizedParts.length > 0) {
+      newMessage.parts = sanitizedParts;
+      newMessage.content = sanitizedParts
+        .filter((part: any) => part?.type === 'text' && typeof part.text === 'string')
+        .map((part: any) => part.text)
+        .join('');
+    } else {
+      const rebuilt = createMessage({
+        role: message.role,
+        text: sanitizeText(getMessageText(message)),
+      });
+
+      newMessage.parts = rebuilt.parts;
+      newMessage.content = rebuilt.content;
     }
 
     return newMessage;
@@ -106,6 +171,7 @@ export async function streamText(props: {
 
   const provider = PROVIDER_LIST.find((p) => p.name === currentProvider) || DEFAULT_PROVIDER;
   const staticModels = LLMManager.getInstance().getStaticModelListFromProvider(provider);
+
   let modelDetails = staticModels.find((m) => m.name === currentModel);
 
   if (!modelDetails) {
@@ -155,12 +221,31 @@ export async function streamText(props: {
       allowedHtmlElements: allowedHTMLElements,
       modificationTagName: MODIFICATIONS_TAG_NAME,
       designScheme,
+      projectTools: chatMode === 'build' && Boolean(options?.prepareStep),
       supabase: {
         isConnected: options?.supabaseConnection?.isConnected || false,
         hasSelectedProject: options?.supabaseConnection?.hasSelectedProject || false,
         credentials: options?.supabaseConnection?.credentials || undefined,
       },
     }) ?? getSystemPrompt();
+
+  // Inject workstyle commentary guidance for build mode
+  if (chatMode === 'build') {
+    systemPrompt = withDevelopmentCommentaryWorkstyle(systemPrompt);
+  }
+
+  if (chatMode === 'build' && agentMode && !options?.prepareStep) {
+    systemPrompt = `${systemPrompt}
+
+<agent_mode_workflow>
+  The user enabled Agent Mode for this build request. Work autonomously through the available project tools, within the request's tool-step limit.
+  - Follow Plan -> edit -> run -> test -> repair. Record a short plan and explicit observable completion criteria with agent_plan, and explain it briefly to the user.
+  - Inspect the relevant project files before editing. For follow-ups, use small exact patches to relevant files and preserve unrelated code; replace entire files only with a concrete reason.
+  - Run the requested app/program, then the smallest relevant available checks. Inspect actual outputs and exit codes. If a check fails, patch its cause and rerun it; edits invalidate earlier passing checks.
+  - Call agent_complete with successful tool evidence for every planned criterion. If blocked or the task limit is reached, clearly state unmet criteria and failed or missing checks.
+  - Do not claim a task or check is complete without tool evidence. Keep the plan focused on the user's request and do not invent extra work.
+</agent_mode_workflow>`;
+  }
 
   if (chatMode === 'build' && contextFiles && contextOptimization) {
     const codeContext = createFilesContext(contextFiles, true);
@@ -183,15 +268,17 @@ export async function streamText(props: {
       ---
       `;
 
-      if (props.messageSliceId) {
-        processedMessages = processedMessages.slice(props.messageSliceId);
-      } else {
-        const lastMessage = processedMessages.pop();
-
-        if (lastMessage) {
-          processedMessages = [lastMessage];
-        }
-      }
+      /*
+       * The summary replaces older conversation history. Keep only the recent
+       * turns that the context optimizer selected, while pruning empty parts.
+       * A zero slice ID means no cutoff was selected, so keep only the latest
+       * message because the summary carries the earlier context.
+       */
+      const recentMessages =
+        props.messageSliceId && props.messageSliceId > 0
+          ? processedMessages.slice(props.messageSliceId)
+          : processedMessages.slice(-1);
+      processedMessages = recentMessages;
     }
   }
 
@@ -234,8 +321,7 @@ export async function streamText(props: {
     );
   }
 
-  // Use maxCompletionTokens for reasoning models (o1, GPT-5), maxTokens for traditional models
-  const tokenParams = isReasoning ? { maxCompletionTokens: safeMaxTokens } : { maxTokens: safeMaxTokens };
+  const tokenParams = { maxOutputTokens: safeMaxTokens };
 
   // Filter out unsupported parameters for reasoning models
   const filteredOptions =
@@ -273,17 +359,52 @@ export async function streamText(props: {
     ),
   );
 
+  /*
+   * supabaseConnection is Bolt's own option, not a v7 one. It is consumed above
+   * to build the system prompt, and must not be forwarded, because v7 spreads
+   * unknown keys all the way into the model call where they are silently
+   * ignored. messages is excluded because this module builds the prompt itself.
+   */
+  const {
+    supabaseConnection: _supabaseConnection,
+    messages: _messages,
+    system: additionalSystemInstructions,
+    onToolCallRetry,
+    ...forwardedOptions
+  } = filteredOptions as StreamingOptions & Record<string, unknown>;
+
+  if (provider.name === 'OpenRouter' && forwardedOptions.tools && Object.keys(forwardedOptions.tools).length > 0) {
+    const routing = forwardedOptions.providerOptions?.openrouter?.provider;
+    forwardedOptions.providerOptions = {
+      ...forwardedOptions.providerOptions,
+      openrouter: {
+        ...forwardedOptions.providerOptions?.openrouter,
+        provider: {
+          ...(routing && typeof routing === 'object' && !Array.isArray(routing) ? routing : {}),
+          require_parameters: true,
+        },
+      },
+    };
+  }
+
+  const selectedModel = provider.getModelInstance({
+    model: modelDetails.name,
+    serverEnv,
+    apiKeys,
+    providerSettings,
+  });
+  const boundedModel =
+    forwardedOptions.streamRetries !== undefined ? withAgentStreamDeadlines(selectedModel) : selectedModel;
   const streamParams = {
-    model: provider.getModelInstance({
-      model: modelDetails.name,
-      serverEnv,
-      apiKeys,
-      providerSettings,
-    }),
-    system: chatMode === 'build' ? systemPrompt : discussPrompt(),
+    model: onToolCallRetry ? withAgentToolCallRecovery(boundedModel, onToolCallRetry) : boundedModel,
+    system: [chatMode === 'build' ? systemPrompt : discussPrompt(), additionalSystemInstructions]
+      .filter((instruction): instruction is string => typeof instruction === 'string' && instruction.length > 0)
+      .join('\n\n'),
     ...tokenParams,
-    messages: convertToCoreMessages(processedMessages as any),
-    ...filteredOptions,
+    messages: await prepareModelMessages(processedMessages as UIMessage[]),
+    ...forwardedOptions,
+
+    ...(onChunk ? { onChunk } : {}),
 
     // Set temperature to 1 for reasoning models (required by OpenAI API)
     ...(isReasoning ? { temperature: 1 } : {}),
@@ -295,8 +416,7 @@ export async function streamText(props: {
     JSON.stringify(
       {
         hasTemperature: 'temperature' in streamParams,
-        hasMaxTokens: 'maxTokens' in streamParams,
-        hasMaxCompletionTokens: 'maxCompletionTokens' in streamParams,
+        hasMaxOutputTokens: 'maxOutputTokens' in streamParams,
         paramKeys: Object.keys(streamParams).filter((key) => !['model', 'messages', 'system'].includes(key)),
         streamParams: Object.fromEntries(
           Object.entries(streamParams).filter(([key]) => !['model', 'messages', 'system'].includes(key)),

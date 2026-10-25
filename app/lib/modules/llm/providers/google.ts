@@ -1,8 +1,8 @@
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import type { LanguageModel } from 'ai';
 import { BaseProvider } from '~/lib/modules/llm/base-provider';
 import type { ModelInfo } from '~/lib/modules/llm/types';
 import type { IProviderSetting } from '~/types/model';
-import type { LanguageModelV1 } from 'ai';
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
 
 export default class GoogleProvider extends BaseProvider {
   name = 'Google';
@@ -13,15 +13,27 @@ export default class GoogleProvider extends BaseProvider {
   };
 
   staticModels: ModelInfo[] = [
-    // Gemini 2.5 Flash: 1M context, fast and capable 2025 model
     {
-      name: 'gemini-2.5-flash',
-      label: 'Gemini 2.5 Flash',
+      name: 'gemini-3.1-pro-preview',
+      label: 'Gemini 3.1 Pro Preview',
       provider: 'Google',
       maxTokenAllowed: 1048576,
       maxCompletionTokens: 65536,
     },
-    // Gemini 2.5 Pro: 1M context, flagship 2025 model
+    {
+      name: 'gemini-3.5-flash',
+      label: 'Gemini 3.5 Flash',
+      provider: 'Google',
+      maxTokenAllowed: 1048576,
+      maxCompletionTokens: 65536,
+    },
+    {
+      name: 'gemini-3-flash-preview',
+      label: 'Gemini 3 Flash Preview',
+      provider: 'Google',
+      maxTokenAllowed: 1048576,
+      maxCompletionTokens: 65536,
+    },
     {
       name: 'gemini-2.5-pro',
       label: 'Gemini 2.5 Pro',
@@ -29,23 +41,20 @@ export default class GoogleProvider extends BaseProvider {
       maxTokenAllowed: 1048576,
       maxCompletionTokens: 65536,
     },
-    // Gemini 2.5 Flash-Lite: 1M context, lightweight fast model
+    {
+      name: 'gemini-2.5-flash',
+      label: 'Gemini 2.5 Flash',
+      provider: 'Google',
+      maxTokenAllowed: 1048576,
+      maxCompletionTokens: 65536,
+    },
     {
       name: 'gemini-2.5-flash-lite',
-      label: 'Gemini 2.5 Flash Lite',
+      label: 'Gemini 2.5 Flash-Lite',
       provider: 'Google',
       maxTokenAllowed: 1048576,
-      maxCompletionTokens: 32768,
+      maxCompletionTokens: 65536,
     },
-    // Gemini 2.0 Flash: 1M context, stable previous gen
-    {
-      name: 'gemini-2.0-flash',
-      label: 'Gemini 2.0 Flash',
-      provider: 'Google',
-      maxTokenAllowed: 1048576,
-      maxCompletionTokens: 8192,
-    },
-    // Gemini 1.5 Pro: 2M context, stable fallback
     {
       name: 'gemini-1.5-pro',
       label: 'Gemini 1.5 Pro',
@@ -53,7 +62,6 @@ export default class GoogleProvider extends BaseProvider {
       maxTokenAllowed: 2000000,
       maxCompletionTokens: 8192,
     },
-    // Gemini 1.5 Flash: 1M context, fast stable fallback
     {
       name: 'gemini-1.5-flash',
       label: 'Gemini 1.5 Flash',
@@ -96,40 +104,46 @@ export default class GoogleProvider extends BaseProvider {
       throw new Error('Invalid response format from Google API');
     }
 
-    const staticModelIds = this.staticModels.map((m) => m.name);
-
+    // Filter out models with very low token limits and experimental/unstable models
     const data = res.models.filter((model: any) => {
-      const modelName = model.name.replace('models/', '');
       const hasGoodTokenLimit = (model.outputTokenLimit || 0) > 8000;
       const isStable = !model.name.includes('exp') || model.name.includes('flash-exp');
 
-      return hasGoodTokenLimit && isStable && !staticModelIds.includes(modelName);
+      return hasGoodTokenLimit && isStable;
     });
 
     return data.map((m: any) => {
       const modelName = m.name.replace('models/', '');
 
-      let contextWindow = 32000;
+      // Get accurate context window from Google API
+      let contextWindow = 32000; // default fallback
 
       if (m.inputTokenLimit && m.outputTokenLimit) {
+        // Use the input limit as the primary context window (typically larger)
         contextWindow = m.inputTokenLimit;
+      } else if (modelName.includes('gemini-3') || modelName.includes('gemini-2.5')) {
+        contextWindow = 1048576;
       } else if (modelName.includes('gemini-1.5-pro')) {
-        contextWindow = 2000000;
+        contextWindow = 2000000; // Gemini 1.5 Pro has 2M context
       } else if (modelName.includes('gemini-1.5-flash')) {
-        contextWindow = 1000000;
-      } else if (modelName.includes('gemini-2.0-flash') || modelName.includes('gemini-2.5')) {
-        contextWindow = 1000000;
+        contextWindow = 1000000; // Gemini 1.5 Flash has 1M context
+      } else if (modelName.includes('gemini-2.0-flash')) {
+        contextWindow = 1000000; // Gemini 2.0 Flash has 1M context
       } else if (modelName.includes('gemini-pro')) {
-        contextWindow = 32000;
+        contextWindow = 32000; // Gemini Pro has 32k context
+      } else if (modelName.includes('gemini-flash')) {
+        contextWindow = 32000; // Gemini Flash has 32k context
       }
 
-      const maxAllowed = 2000000;
+      // Cap at reasonable limits to prevent issues
+      const maxAllowed = 2000000; // 2M tokens max
       const finalContext = Math.min(contextWindow, maxAllowed);
 
-      let completionTokens = 8192;
+      // Get completion token limit from Google API
+      let completionTokens = modelName.includes('gemini-3') || modelName.includes('gemini-2.5') ? 65536 : 8192;
 
       if (m.outputTokenLimit && m.outputTokenLimit > 0) {
-        completionTokens = Math.min(m.outputTokenLimit, 65536);
+        completionTokens = Math.min(m.outputTokenLimit, 128000); // Use API value, cap at reasonable limit
       }
 
       return {
@@ -147,7 +161,7 @@ export default class GoogleProvider extends BaseProvider {
     serverEnv: any;
     apiKeys?: Record<string, string>;
     providerSettings?: Record<string, IProviderSetting>;
-  }): LanguageModelV1 {
+  }): LanguageModel {
     const { model, serverEnv, apiKeys, providerSettings } = options;
 
     const { apiKey } = this.getProviderBaseUrlAndKey({

@@ -1,17 +1,42 @@
-import { json } from '@remix-run/cloudflare';
 import JSZip from 'jszip';
+
+function decodeTextFile(bytes: Uint8Array): string | null {
+  /*
+   * Starter templates are injected through text-based boltAction tags, so binary
+   * assets cannot be represented safely in this response format.
+   */
+  if (bytes.includes(0)) {
+    return null;
+  }
+
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
 
 // Function to detect if we're running in Cloudflare
 function isCloudflareEnvironment(context: any): boolean {
-  // Check if we're in production AND have Cloudflare Pages specific env vars
-  const isProduction = process.env.NODE_ENV === 'production';
-  const hasCfPagesVars = !!(
-    context?.cloudflare?.env?.CF_PAGES ||
-    context?.cloudflare?.env?.CF_PAGES_URL ||
-    context?.cloudflare?.env?.CF_PAGES_COMMIT_SHA
-  );
+  /*
+   * The reliable signal is an ExecutionContext at `context.cloudflare.ctx`, which
+   * both the Workers and Pages runtimes provide.
+   *
+   * This used to require `process.env.NODE_ENV === 'production'` plus one of the
+   * `CF_PAGES*` variables. Cloudflare injects those on Pages only — they do not
+   * exist on Workers — so after the Pages -> Workers move this returned false
+   * everywhere and every template request fell through to the release-zipball
+   * path. That path needs the repo to have a published GitHub Release and fails
+   * with a 403 otherwise, which broke starter templates.
+   */
+  const cloudflare = context?.cloudflare;
 
-  return isProduction && hasCfPagesVars;
+  if (cloudflare?.ctx && typeof cloudflare.ctx.waitUntil === 'function') {
+    return true;
+  }
+
+  // Legacy Cloudflare Pages detection, kept for older deployments.
+  return !!(cloudflare?.env?.CF_PAGES || cloudflare?.env?.CF_PAGES_URL || cloudflare?.env?.CF_PAGES_COMMIT_SHA);
 }
 
 // Cloudflare-compatible method using GitHub Contents API
@@ -28,7 +53,16 @@ async function fetchRepoContentsCloudflare(repo: string, githubToken?: string) {
   });
 
   if (!repoResponse.ok) {
-    throw new Error(`Repository not found: ${repo}`);
+    /*
+     * Include the status: an unauthenticated caller gets 403 from GitHub's 60
+     * requests/hour limit, and reporting that as "Repository not found" sends the
+     * user looking for a template bug that does not exist.
+     */
+    throw new Error(
+      repoResponse.status === 403 || repoResponse.status === 429
+        ? `GitHub API rate limit exceeded while fetching ${repo}. Set GITHUB_TOKEN to raise the limit.`
+        : `Repository not found (HTTP ${repoResponse.status}): ${repo}`,
+    );
   }
 
   const repoData = (await repoResponse.json()) as any;
@@ -79,6 +113,7 @@ async function fetchRepoContentsCloudflare(repo: string, githubToken?: string) {
 
   for (let i = 0; i < files.length; i += batchSize) {
     const batch = files.slice(i, i + batchSize);
+
     const batchPromises = batch.map(async (file: any) => {
       try {
         const contentResponse = await fetch(`${baseUrl}/repos/${repo}/contents/${file.path}`, {
@@ -95,7 +130,13 @@ async function fetchRepoContentsCloudflare(repo: string, githubToken?: string) {
         }
 
         const contentData = (await contentResponse.json()) as any;
-        const content = atob(contentData.content.replace(/\s/g, ''));
+        const binaryContent = atob(contentData.content.replace(/\s/g, ''));
+        const contentBytes = Uint8Array.from(binaryContent, (character) => character.charCodeAt(0));
+        const content = decodeTextFile(contentBytes);
+
+        if (content === null) {
+          return null;
+        }
 
         return {
           name: file.path.split('/').pop() || '',
@@ -134,6 +175,10 @@ async function fetchRepoContentsZip(repo: string, githubToken?: string) {
   });
 
   if (!releaseResponse.ok) {
+    if (releaseResponse.status === 403 || releaseResponse.status === 404) {
+      return fetchRepoContentsBranchArchive(repo);
+    }
+
     throw new Error(`GitHub API error: ${releaseResponse.status} - ${releaseResponse.statusText}`);
   }
 
@@ -187,7 +232,11 @@ async function fetchRepoContentsZip(repo: string, githubToken?: string) {
     }
 
     // Get the file content
-    const content = await zipEntry.async('string');
+    const content = decodeTextFile(await zipEntry.async('uint8array'));
+
+    if (content === null) {
+      return null;
+    }
 
     return {
       name: normalizedPath.split('/').pop() || '',
@@ -201,12 +250,53 @@ async function fetchRepoContentsZip(repo: string, githubToken?: string) {
   return results.filter(Boolean);
 }
 
+async function fetchRepoContentsBranchArchive(repo: string) {
+  for (const branch of ['main', 'master']) {
+    const response = await fetch(`https://codeload.github.com/${repo}/zip/refs/heads/${branch}`);
+
+    if (response.status === 404) {
+      continue;
+    }
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch ${branch} branch archive: ${response.status}`);
+    }
+
+    const zip = await JSZip.loadAsync(await response.arrayBuffer());
+
+    const rootFolder = Object.keys(zip.files)
+      .find((path) => path.includes('/'))
+      ?.split('/')[0];
+
+    if (!rootFolder) {
+      throw new Error(`The ${branch} branch archive for ${repo} is empty`);
+    }
+
+    const files = await Promise.all(
+      Object.entries(zip.files).map(async ([filename, entry]) => {
+        if (entry.dir || !filename.startsWith(`${rootFolder}/`)) {
+          return null;
+        }
+
+        const path = filename.slice(rootFolder.length + 1);
+        const content = decodeTextFile(await entry.async('uint8array'));
+
+        return content === null ? null : { name: path.split('/').pop() || '', path, content };
+      }),
+    );
+
+    return files.filter((file) => file !== null);
+  }
+
+  throw new Error(`No main or master branch archive found for ${repo}`);
+}
+
 export async function loader({ request, context }: { request: Request; context: any }) {
   const url = new URL(request.url);
   const repo = url.searchParams.get('repo');
 
   if (!repo) {
-    return json({ error: 'Repository name is required' }, { status: 400 });
+    return Response.json({ error: 'Repository name is required' }, { status: 400 });
   }
 
   try {
@@ -217,21 +307,29 @@ export async function loader({ request, context }: { request: Request; context: 
     let fileList;
 
     if (isCloudflareEnvironment(context)) {
-      fileList = await fetchRepoContentsCloudflare(repo, githubToken);
+      try {
+        fileList = await fetchRepoContentsCloudflare(repo, githubToken);
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.includes('GitHub API rate limit exceeded')) {
+          throw error;
+        }
+
+        fileList = await fetchRepoContentsBranchArchive(repo);
+      }
     } else {
       fileList = await fetchRepoContentsZip(repo, githubToken);
     }
 
-    // Filter out .git files for both methods
-    const filteredFiles = fileList.filter((file: any) => !file.path.startsWith('.git'));
+    // Filter out Git metadata for both methods
+    const filteredFiles = fileList.filter((file: any) => file.path !== '.git' && !file.path.startsWith('.git/'));
 
-    return json(filteredFiles);
+    return Response.json(filteredFiles);
   } catch (error) {
     console.error('Error processing GitHub template:', error);
     console.error('Repository:', repo);
     console.error('Error details:', error instanceof Error ? error.message : String(error));
 
-    return json(
+    return Response.json(
       {
         error: 'Failed to fetch template files',
         details: error instanceof Error ? error.message : String(error),

@@ -103,10 +103,9 @@ export class GitLabApiService {
   }
 
   private get _headers() {
-    // Log token format for debugging
+    // Log token metadata only; never persist bearer-token material in logs.
     console.log('GitLab API token info:', {
       tokenLength: this._token.length,
-      tokenPrefix: this._token.substring(0, 10) + '...',
       tokenType: this._token.startsWith('glpat-') ? 'personal-access-token' : 'unknown',
     });
 
@@ -187,6 +186,7 @@ export class GitLabApiService {
 
     let allProjects: any[] = [];
     let page = 1;
+
     const maxPages = 10; // Limit to prevent excessive API calls
 
     while (page <= maxPages) {

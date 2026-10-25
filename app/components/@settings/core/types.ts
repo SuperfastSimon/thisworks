@@ -1,5 +1,5 @@
-import type { ReactNode } from 'react';
 import { User, Folder, Wifi, Settings, Box, Sliders } from 'lucide-react';
+import type { ReactNode } from 'react';
 
 export type SettingCategory = 'profile' | 'file_sharing' | 'connectivity' | 'system' | 'services' | 'preferences';
 
@@ -11,13 +11,15 @@ export type TabType =
   | 'data'
   | 'cloud-providers'
   | 'local-providers'
+  | 'connectors'
   | 'github'
   | 'gitlab'
   | 'netlify'
   | 'vercel'
   | 'supabase'
   | 'event-logs'
-  | 'mcp';
+  | 'mcp'
+  | 'plugins';
 
 export type WindowType = 'user' | 'developer';
 
@@ -74,6 +76,7 @@ export const TAB_LABELS: Record<TabType, string> = {
   data: 'Data Management',
   'cloud-providers': 'Cloud Providers',
   'local-providers': 'Local Providers',
+  connectors: 'Connectors',
   github: 'GitHub',
   gitlab: 'GitLab',
   netlify: 'Netlify',
@@ -81,6 +84,7 @@ export const TAB_LABELS: Record<TabType, string> = {
   supabase: 'Supabase',
   'event-logs': 'Event Logs',
   mcp: 'MCP Servers',
+  plugins: 'Plugins',
 };
 
 export const categoryLabels: Record<SettingCategory, string> = {

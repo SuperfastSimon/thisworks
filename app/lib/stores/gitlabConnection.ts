@@ -1,9 +1,9 @@
-import { atom, computed } from 'nanostores';
 import Cookies from 'js-cookie';
-import { logStore } from '~/lib/stores/logs';
+import { atom, computed } from 'nanostores';
 import { GitLabApiService } from '~/lib/services/gitlabApiService';
-import { calculateStatsSummary } from '~/utils/gitlabStats';
+import { logStore } from '~/lib/stores/logs';
 import type { GitLabConnection, GitLabStats } from '~/types/GitLab';
+import { calculateStatsSummary } from '~/utils/gitlabStats';
 
 // Auto-connect using environment variable
 const envToken = import.meta.env?.VITE_GITLAB_ACCESS_TOKEN;
@@ -270,7 +270,6 @@ class GitLabConnectionStore {
       // Log more detailed error information
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       console.error('GitLab auto-connect error details:', {
-        token: envToken.substring(0, 10) + '...', // Log first 10 chars for debugging
         error: errorMessage,
       });
 

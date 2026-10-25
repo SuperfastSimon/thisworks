@@ -1,9 +1,9 @@
-import type { ProviderInfo } from '~/types/model';
 import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { ModelInfo } from '~/lib/modules/llm/types';
-import { classNames } from '~/utils/classNames';
 import { LOCAL_PROVIDERS } from '~/lib/stores/settings';
+import type { ProviderInfo } from '~/types/model';
+import { classNames } from '~/utils/classNames';
 
 // Fuzzy search utilities
 const levenshteinDistance = (str1: string, str2: string): number => {
@@ -93,9 +93,8 @@ interface ModelSelectorProps {
 
 // Helper function to determine if a model is likely free
 const isModelLikelyFree = (model: ModelInfo, providerName?: string): boolean => {
-  // OpenRouter models with zero pricing in the label
-  if (providerName === 'OpenRouter' && model.label.includes('in:$0.00') && model.label.includes('out:$0.00')) {
-    return true;
+  if (providerName === 'OpenRouter') {
+    return model.isFree ?? (model.name.endsWith(':free') || model.name === 'openrouter/free');
   }
 
   // Models with "free" in the name or label
@@ -448,7 +447,7 @@ export const ModelSelector = ({
         <div
           className={classNames(
             'w-full p-2 rounded-lg border border-bolt-elements-borderColor',
-            'bg-bolt-elements-prompt-background text-bolt-elements-textPrimary',
+            'bg-bolt-elements-background-depth-2 text-bolt-elements-textPrimary',
             'focus-within:outline-none focus-within:ring-2 focus-within:ring-bolt-elements-focus',
             'transition-all cursor-pointer',
             isProviderDropdownOpen ? 'ring-2 ring-bolt-elements-focus' : undefined,
@@ -514,7 +513,7 @@ export const ModelSelector = ({
                   placeholder="Search providers... (⌘K to clear)"
                   className={classNames(
                     'w-full pl-8 pr-8 py-1.5 rounded-md text-sm',
-                    'bg-bolt-elements-background-depth-2 border border-bolt-elements-borderColor',
+                    'bg-bolt-elements-background-depth-1 border border-bolt-elements-borderColor',
                     'text-bolt-elements-textPrimary placeholder:text-bolt-elements-textTertiary',
                     'focus:outline-none focus:ring-2 focus:ring-bolt-elements-focus',
                     'transition-all',
@@ -574,7 +573,9 @@ export const ModelSelector = ({
               ) : (
                 filteredProviders.map((providerOption, index) => (
                   <div
-                    ref={(el) => (providerOptionsRef.current[index] = el)}
+                    ref={(el) => {
+                      providerOptionsRef.current[index] = el;
+                    }}
                     key={providerOption.name}
                     role="option"
                     aria-selected={provider?.name === providerOption.name}
@@ -584,7 +585,7 @@ export const ModelSelector = ({
                       'text-bolt-elements-textPrimary',
                       'outline-none',
                       provider?.name === providerOption.name || focusedProviderIndex === index
-                        ? 'bg-bolt-elements-background-depth-2'
+                        ? 'bg-bolt-elements-background-depth-3'
                         : undefined,
                       focusedProviderIndex === index ? 'ring-1 ring-inset ring-bolt-elements-focus' : undefined,
                     )}
@@ -639,7 +640,7 @@ export const ModelSelector = ({
         <div
           className={classNames(
             'w-full p-2 rounded-lg border border-bolt-elements-borderColor',
-            'bg-bolt-elements-prompt-background text-bolt-elements-textPrimary',
+            'bg-bolt-elements-background-depth-2 text-bolt-elements-textPrimary',
             'focus-within:outline-none focus-within:ring-2 focus-within:ring-bolt-elements-focus',
             'transition-all cursor-pointer',
             isModelDropdownOpen ? 'ring-2 ring-bolt-elements-focus' : undefined,
@@ -684,6 +685,7 @@ export const ModelSelector = ({
                       e.stopPropagation();
                       setShowFreeModelsOnly(!showFreeModelsOnly);
                     }}
+                    aria-pressed={showFreeModelsOnly}
                     className={classNames(
                       'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-all',
                       'hover:bg-bolt-elements-background-depth-3',
@@ -721,7 +723,7 @@ export const ModelSelector = ({
                   placeholder="Search models... (⌘K to clear)"
                   className={classNames(
                     'w-full pl-8 pr-8 py-1.5 rounded-md text-sm',
-                    'bg-bolt-elements-background-depth-2 border border-bolt-elements-borderColor',
+                    'bg-bolt-elements-background-depth-1 border border-bolt-elements-borderColor',
                     'text-bolt-elements-textPrimary placeholder:text-bolt-elements-textTertiary',
                     'focus:outline-none focus:ring-2 focus:ring-bolt-elements-focus',
                     'transition-all',
@@ -804,7 +806,9 @@ export const ModelSelector = ({
               ) : (
                 filteredModels.map((modelOption, index) => (
                   <div
-                    ref={(el) => (modelOptionsRef.current[index] = el)}
+                    ref={(el) => {
+                      modelOptionsRef.current[index] = el;
+                    }}
                     key={modelOption.name}
                     role="option"
                     aria-selected={model === modelOption.name}
@@ -814,7 +818,7 @@ export const ModelSelector = ({
                       'text-bolt-elements-textPrimary',
                       'outline-none',
                       model === modelOption.name || focusedModelIndex === index
-                        ? 'bg-bolt-elements-background-depth-2'
+                        ? 'bg-bolt-elements-background-depth-3'
                         : undefined,
                       focusedModelIndex === index ? 'ring-1 ring-inset ring-bolt-elements-focus' : undefined,
                     )}

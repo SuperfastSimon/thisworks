@@ -1,28 +1,27 @@
+import AmazonBedrockProvider from './providers/amazon-bedrock';
 import AnthropicProvider from './providers/anthropic';
 import CerebrasProvider from './providers/cerebras';
 import CohereProvider from './providers/cohere';
 import DeepseekProvider from './providers/deepseek';
 import FireworksProvider from './providers/fireworks';
+import GithubProvider from './providers/github';
 import GoogleProvider from './providers/google';
 import GroqProvider from './providers/groq';
 import HuggingFaceProvider from './providers/huggingface';
 import HyperbolicProvider from './providers/hyperbolic';
+import LMStudioProvider from './providers/lmstudio';
 import MistralProvider from './providers/mistral';
 import MoonshotProvider from './providers/moonshot';
 import OllamaProvider from './providers/ollama';
-import OpenAIProvider from './providers/openai';
 import OpenRouterProvider from './providers/open-router';
+import OpenAIProvider from './providers/openai';
 import OpenAILikeProvider from './providers/openai-like';
 import PerplexityProvider from './providers/perplexity';
-import XAIProvider from './providers/xai';
 import TogetherProvider from './providers/together';
-import LMStudioProvider from './providers/lmstudio';
-import AmazonBedrockProvider from './providers/amazon-bedrock';
-import GithubProvider from './providers/github';
+import XAIProvider from './providers/xai';
 import ZaiProvider from './providers/z-ai';
 
 export {
-  OpenAIProvider,
   AnthropicProvider,
   CerebrasProvider,
   CohereProvider,
@@ -35,6 +34,7 @@ export {
   MistralProvider,
   MoonshotProvider,
   OllamaProvider,
+  OpenAIProvider,
   OpenRouterProvider,
   OpenAILikeProvider,
   PerplexityProvider,

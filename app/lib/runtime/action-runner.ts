@@ -1,11 +1,11 @@
 import type { WebContainer } from '@webcontainer/api';
-import { path as nodePath } from '~/utils/path';
 import { atom, map, type MapStore } from 'nanostores';
+import type { ActionCallbackData } from './message-parser';
 import type { ActionAlert, BoltAction, DeployAlert, FileHistory, SupabaseAction, SupabaseAlert } from '~/types/actions';
 import { createScopedLogger } from '~/utils/logger';
-import { unreachable } from '~/utils/unreachable';
-import type { ActionCallbackData } from './message-parser';
+import { path as nodePath } from '~/utils/path';
 import type { BoltShell } from '~/utils/shell';
+import { unreachable } from '~/utils/unreachable';
 
 const logger = createScopedLogger('ActionRunner');
 
@@ -29,8 +29,7 @@ export type ActionState = BaseActionState | FailedActionState;
 type BaseActionUpdate = Partial<Pick<BaseActionState, 'status' | 'abort' | 'executed'>>;
 
 export type ActionStateUpdate =
-  | BaseActionUpdate
-  | (Omit<BaseActionUpdate, 'status'> & { status: 'failed'; error: string });
+  BaseActionUpdate | (Omit<BaseActionUpdate, 'status'> & { status: 'failed'; error: string });
 
 type ActionsMap = MapStore<Record<string, ActionState>>;
 
@@ -113,8 +112,21 @@ export class ActionRunner {
     });
 
     this.#currentExecutionPromise.then(() => {
-      this.#updateAction(actionId, { status: 'running' });
+      if (!abortController.signal.aborted) {
+        this.#updateAction(actionId, { status: 'running' });
+      }
     });
+  }
+
+  abortAllActions() {
+    const actions = this.actions.get();
+
+    for (const [actionId, action] of Object.entries(actions)) {
+      if (action.status === 'pending' || action.status === 'running') {
+        logger.debug(`[${action.type}]: Aborting action ${actionId}`);
+        action.abort();
+      }
+    }
   }
 
   async runAction(data: ActionCallbackData, isStreaming: boolean = false) {
@@ -125,7 +137,7 @@ export class ActionRunner {
       unreachable(`Action ${actionId} not found`);
     }
 
-    if (action.executed) {
+    if (action.executed || action.abortSignal.aborted || action.status === 'aborted') {
       return; // No return value here
     }
 
@@ -150,6 +162,10 @@ export class ActionRunner {
 
   async #executeAction(actionId: string, isStreaming: boolean = false) {
     const action = this.actions.get()[actionId];
+
+    if (action.abortSignal.aborted) {
+      return;
+    }
 
     this.#updateAction(actionId, { status: 'running' });
 
@@ -189,7 +205,11 @@ export class ActionRunner {
           // making the start app non blocking
 
           this.#runStartAction(action)
-            .then(() => this.#updateAction(actionId, { status: 'complete' }))
+            .then(() => {
+              if (!action.abortSignal.aborted) {
+                this.#updateAction(actionId, { status: 'complete' });
+              }
+            })
             .catch((err: Error) => {
               if (action.abortSignal.aborted) {
                 return;
@@ -267,10 +287,19 @@ export class ActionRunner {
       action.content = validationResult.modifiedCommand;
     }
 
-    const resp = await shell.executeCommand(this.runnerId.get(), action.content, () => {
-      logger.debug(`[${action.type}]:Aborting Action\n\n`, action);
-      action.abort();
-    });
+    if (action.abortSignal.aborted) {
+      return;
+    }
+
+    const resp = await shell.executeCommand(
+      this.runnerId.get(),
+      action.content,
+      () => {
+        logger.debug(`[${action.type}]:Aborting Action\n\n`, action);
+        action.abort();
+      },
+      action.abortSignal,
+    );
     logger.debug(`${action.type} Shell Response: [exit code:${resp?.exitCode}]`);
 
     if (resp?.exitCode != 0) {
@@ -291,14 +320,23 @@ export class ActionRunner {
     const shell = this.#shellTerminal();
     await shell.ready();
 
+    if (action.abortSignal.aborted) {
+      return undefined;
+    }
+
     if (!shell || !shell.terminal || !shell.process) {
       unreachable('Shell terminal not found');
     }
 
-    const resp = await shell.executeCommand(this.runnerId.get(), action.content, () => {
-      logger.debug(`[${action.type}]:Aborting Action\n\n`, action);
-      action.abort();
-    });
+    const resp = await shell.executeCommand(
+      this.runnerId.get(),
+      action.content,
+      () => {
+        logger.debug(`[${action.type}]:Aborting Action\n\n`, action);
+        action.abort();
+      },
+      action.abortSignal,
+    );
     logger.debug(`${action.type} Shell Response: [exit code:${resp?.exitCode}]`);
 
     if (resp?.exitCode != 0) {
@@ -313,8 +351,30 @@ export class ActionRunner {
       unreachable('Expected file action');
     }
 
+    /*
+     * The parser tolerates `<boltAction type="file">` without a `filePath` so the
+     * model's text is not swallowed, but there is nothing to write in that case.
+     * Failing explicitly keeps this out of `nodePath.relative`, which would throw a
+     * bare TypeError on `undefined`.
+     */
+    if (!action.filePath) {
+      throw new Error('Cannot write file: the action has no filePath');
+    }
+
     const webcontainer = await this.#webcontainer;
-    const relativePath = nodePath.relative(webcontainer.workdir, action.filePath);
+
+    const relativePath = nodePath.isAbsolute(action.filePath)
+      ? nodePath.relative(webcontainer.workdir, action.filePath)
+      : nodePath.normalize(action.filePath);
+
+    if (
+      relativePath === '.' ||
+      relativePath === '..' ||
+      relativePath.startsWith('../') ||
+      nodePath.isAbsolute(relativePath)
+    ) {
+      throw new Error(`Cannot write file outside the project directory: ${action.filePath}`);
+    }
 
     let folder = nodePath.dirname(relativePath);
 
@@ -327,6 +387,7 @@ export class ActionRunner {
         logger.debug('Created folder', folder);
       } catch (error) {
         logger.error('Failed to create folder\n\n', error);
+        throw error;
       }
     }
 
@@ -335,6 +396,7 @@ export class ActionRunner {
       logger.debug(`File written ${relativePath}`);
     } catch (error) {
       logger.error('Failed to write file\n\n', error);
+      throw error;
     }
   }
 
@@ -395,6 +457,7 @@ export class ActionRunner {
     const buildProcess = await webcontainer.spawn('npm', ['run', 'build']);
 
     let output = '';
+
     const outputPromise = buildProcess.output.pipeTo(
       new WritableStream({
         write(data) {

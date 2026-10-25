@@ -1,4 +1,9 @@
 import { useStore } from '@nanostores/react';
+import Cookies from 'js-cookie';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { TabWindowConfig } from '~/components/@settings/core/types';
+import { getLocalStorage, setLocalStorage } from '~/lib/persistence';
+import { logStore } from '~/lib/stores/logs';
 import {
   isDebugMode,
   isEventLogsEnabled,
@@ -16,12 +21,7 @@ import {
   updateEventLogs,
   updatePromptId,
 } from '~/lib/stores/settings';
-import { useCallback, useEffect, useState } from 'react';
-import Cookies from 'js-cookie';
 import type { IProviderSetting, ProviderInfo, IProviderConfig } from '~/types/model';
-import type { TabWindowConfig } from '~/components/@settings/core/types';
-import { logStore } from '~/lib/stores/logs';
-import { getLocalStorage, setLocalStorage } from '~/lib/persistence';
 
 export interface Settings {
   theme: 'light' | 'dark' | 'system';
@@ -76,9 +76,15 @@ export function useSettings(): UseSettingsReturn {
   const promptId = useStore(promptStore);
   const isLatestBranch = useStore(latestBranchStore);
   const autoSelectTemplate = useStore(autoSelectStarterTemplate);
-  const [activeProviders, setActiveProviders] = useState<ProviderInfo[]>([]);
+
+  const activeProviders = useMemo(
+    () => Object.values(providers).filter((provider) => provider.settings.enabled),
+    [providers],
+  );
+
   const contextOptimizationEnabled = useStore(enableContextOptimizationStore);
   const tabConfiguration = useStore(tabConfigurationStore);
+
   const [settings, setSettings] = useState<Settings>(() => {
     const storedSettings = getLocalStorage('settings');
     return {
@@ -90,14 +96,6 @@ export function useSettings(): UseSettingsReturn {
       tabConfiguration,
     };
   });
-
-  useEffect(() => {
-    const active = Object.entries(providers)
-      .filter(([_key, provider]) => provider.settings.enabled)
-      .map(([_k, p]) => p);
-
-    setActiveProviders(active);
-  }, [providers]);
 
   const saveSettings = useCallback((newSettings: Partial<Settings>) => {
     setSettings((prev) => {

@@ -1,15 +1,16 @@
-import { memo, useMemo, useState, useEffect, useCallback } from 'react';
 import { useStore } from '@nanostores/react';
-import { workbenchStore } from '~/lib/stores/workbench';
-import type { FileMap } from '~/lib/stores/files';
-import type { EditorDocument } from '~/components/editor/codemirror/CodeMirrorEditor';
 import { diffLines, type Change } from 'diff';
-import { getHighlighter } from 'shiki';
-import '~/styles/diff-view.css';
-import { diffFiles, extractRelativePath } from '~/utils/diff';
-import type { FileHistory } from '~/types/actions';
-import { getLanguageFromExtension } from '~/utils/getLanguageFromExtension';
+import { memo, useMemo, useState, useEffect, useCallback } from 'react';
+import { createHighlighter } from 'shiki';
+import type { EditorDocument } from '~/components/editor/codemirror/CodeMirrorEditor';
+import type { FileMap } from '~/lib/stores/files';
 import { themeStore } from '~/lib/stores/theme';
+import { workbenchStore } from '~/lib/stores/workbench';
+import '~/styles/diff-view.css';
+import type { FileHistory } from '~/types/actions';
+import { getThemeMode } from '~/types/theme';
+import { diffFiles, extractRelativePath } from '~/utils/diff';
+import { getLanguageFromExtension } from '~/utils/getLanguageFromExtension';
 
 interface CodeComparisonProps {
   beforeCode: string;
@@ -39,7 +40,7 @@ interface FullscreenButtonProps {
 const FullscreenButton = memo(({ onClick, isFullscreen }: FullscreenButtonProps) => (
   <button
     onClick={onClick}
-    className="ml-4 p-1 rounded hover:bg-bolt-elements-background-depth-3 text-bolt-elements-textTertiary hover:text-bolt-elements-textPrimary transition-colors"
+    className="ml-4 p-1 rounded bg-bolt-elements-background-depth-2 hover:bg-bolt-elements-background-depth-3 text-bolt-elements-textTertiary hover:text-bolt-elements-textPrimary transition-colors"
     title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
   >
     <div className={isFullscreen ? 'i-ph:corners-in' : 'i-ph:corners-out'} />
@@ -128,6 +129,7 @@ const processChanges = (beforeCode: string, afterCode: string) => {
       } else {
         // Look ahead for potential matches
         let matchFound = false;
+
         const lookAhead = 3; // Number of lines to look ahead
 
         // Try to find matching lines ahead
@@ -315,6 +317,7 @@ const lineNumberStyles =
   'w-9 shrink-0 pl-2 py-1 text-left font-mono text-bolt-elements-textTertiary border-r border-bolt-elements-borderColor bg-bolt-elements-background-depth-1';
 const lineContentStyles =
   'px-1 py-1 font-mono whitespace-pre flex-1 group-hover:bg-bolt-elements-background-depth-2 text-bolt-elements-textPrimary';
+
 const diffPanelStyles = 'h-full overflow-auto diff-panel-content';
 
 // Updated color styles for better consistency
@@ -378,7 +381,7 @@ const NoChangesView = memo(
                       ? highlighter
                           .codeToHtml(line, {
                             lang: language,
-                            theme: theme === 'dark' ? 'github-dark' : 'github-light',
+                            theme: getThemeMode(theme) === 'dark' ? 'github-dark' : 'github-light',
                           })
                           .replace(/<\/?pre[^>]*>/g, '')
                           .replace(/<\/?code[^>]*>/g, '')
@@ -424,7 +427,10 @@ const CodeLine = memo(
       if (type === 'unchanged' || !block.charChanges) {
         const highlightedCode = highlighter
           ? highlighter
-              .codeToHtml(content, { lang: language, theme: theme === 'dark' ? 'github-dark' : 'github-light' })
+              .codeToHtml(content, {
+                lang: language,
+                theme: getThemeMode(theme) === 'dark' ? 'github-dark' : 'github-light',
+              })
               .replace(/<\/?pre[^>]*>/g, '')
               .replace(/<\/?code[^>]*>/g, '')
           : content;
@@ -440,7 +446,7 @@ const CodeLine = memo(
               ? highlighter
                   .codeToHtml(change.value, {
                     lang: language,
-                    theme: theme === 'dark' ? 'github-dark' : 'github-light',
+                    theme: getThemeMode(theme) === 'dark' ? 'github-dark' : 'github-light',
                   })
                   .replace(/<\/?pre[^>]*>/g, '')
                   .replace(/<\/?code[^>]*>/g, '')
@@ -494,7 +500,6 @@ const FileInfo = memo(
       const changes = diffLines(beforeCode, afterCode, {
         newlineIsToken: false,
         ignoreWhitespace: true,
-        ignoreCase: false,
       });
 
       return changes.reduce(
@@ -554,7 +559,7 @@ const getSharedHighlighter = async () => {
     return highlighterPromise;
   }
 
-  highlighterPromise = getHighlighter({
+  highlighterPromise = createHighlighter({
     themes: ['github-dark', 'github-light'],
     langs: [
       'typescript',
@@ -684,6 +689,7 @@ export const DiffView = memo(({ fileHistory, setFileHistory }: DiffViewProps) =>
 
       // Normalizar o conteúdo para comparação
       const normalizedCurrentContent = currentContent.replace(/\r\n/g, '\n').trim();
+
       const normalizedOriginalContent = (existingHistory?.originalContent || file.content)
         .replace(/\r\n/g, '\n')
         .trim();

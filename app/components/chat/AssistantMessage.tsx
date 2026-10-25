@@ -1,38 +1,39 @@
+import type { UIMessage } from 'ai';
 import { memo, Fragment } from 'react';
 import { Markdown } from './Markdown';
-import type { JSONValue } from 'ai';
-import Popover from '~/components/ui/Popover';
-import { workbenchStore } from '~/lib/stores/workbench';
-import { WORK_DIR } from '~/utils/constants';
-import WithTooltip from '~/components/ui/Tooltip';
-import type { Message } from 'ai';
-import type { ProviderInfo } from '~/types/model';
-import type {
-  TextUIPart,
-  ReasoningUIPart,
-  ToolInvocationUIPart,
-  SourceUIPart,
-  FileUIPart,
-  StepStartUIPart,
-} from '@ai-sdk/ui-utils';
+import { ThinkingDetails } from './Thinking';
 import { ToolInvocations } from './ToolInvocations';
+import Popover from '~/components/ui/Popover';
+import WithTooltip from '~/components/ui/Tooltip';
+import {
+  getMessageAnnotations,
+  getMessageText,
+  getReasoningText,
+  isToolPart,
+  type AnyMessage,
+  type AnyPart,
+} from '~/lib/persistence/messageMigration';
+import { workbenchStore } from '~/lib/stores/workbench';
 import type { ToolCallAnnotation } from '~/types/context';
+import type { ProviderInfo } from '~/types/model';
+import { WORK_DIR } from '~/utils/constants';
 
 interface AssistantMessageProps {
-  content: string;
-  annotations?: JSONValue[];
+  content?: unknown;
+  annotations?: unknown;
   messageId?: string;
   onRewind?: (messageId: string) => void;
   onFork?: (messageId: string) => void;
-  append?: (message: Message) => void;
+  append?: (message: UIMessage) => void;
   chatMode?: 'discuss' | 'build';
   setChatMode?: (mode: 'discuss' | 'build') => void;
   model?: string;
   provider?: ProviderInfo;
-  parts:
-    | (TextUIPart | ReasoningUIPart | ToolInvocationUIPart | SourceUIPart | FileUIPart | StepStartUIPart)[]
-    | undefined;
-  addToolResult: ({ toolCallId, result }: { toolCallId: string; result: any }) => void;
+  parts: AnyPart[] | undefined;
+  addToolResult: (options: { tool: string; toolCallId: string; output: unknown }) => void;
+
+  /** When true, the parent message is still receiving tokens from the LLM. */
+  isStreaming?: boolean;
 }
 
 function openArtifactInWorkbench(filePath: string) {
@@ -73,31 +74,54 @@ export const AssistantMessage = memo(
     provider,
     parts,
     addToolResult,
+    isStreaming = false,
   }: AssistantMessageProps) => {
-    const filteredAnnotations = (annotations?.filter(
-      (annotation: JSONValue) =>
-        annotation && typeof annotation === 'object' && Object.keys(annotation).includes('type'),
-    ) || []) as { type: string; value: any } & { [key: string]: any }[];
+    /*
+     * Chat.client.tsx:649 deliberately replaces assistant `content` with the
+     * parsed stream, where artifacts and actions have already been extracted.
+     * So `content` wins when present and parts are only the fallback; swapping
+     * the order would render raw <boltArtifact> tags into the bubble.
+     */
+    const messageText = typeof content === 'string' ? content : getMessageText({ parts });
+    const reasoningText = getReasoningText({ parts } as AnyMessage);
 
-    let chatSummary: string | undefined = undefined;
+    const filteredAnnotations = getMessageAnnotations({ annotations, parts } as AnyMessage);
 
-    if (filteredAnnotations.find((annotation) => annotation.type === 'chatSummary')) {
-      chatSummary = filteredAnnotations.find((annotation) => annotation.type === 'chatSummary')?.summary;
-    }
+    const chatSummaryAnnotation = filteredAnnotations.find((annotation) => annotation.type === 'chatSummary');
+    const chatSummary: string | undefined = chatSummaryAnnotation?.summary;
 
-    let codeContext: string[] | undefined = undefined;
+    const codeContextAnnotation = filteredAnnotations.find((annotation) => annotation.type === 'codeContext');
+    const codeContext: string[] | undefined = codeContextAnnotation?.files;
 
-    if (filteredAnnotations.find((annotation) => annotation.type === 'codeContext')) {
-      codeContext = filteredAnnotations.find((annotation) => annotation.type === 'codeContext')?.files;
-    }
+    const usageAnnotation = filteredAnnotations.find((annotation) => annotation.type === 'usage');
 
-    const usage: {
-      completionTokens: number;
-      promptTokens: number;
-      totalTokens: number;
-    } = filteredAnnotations.find((annotation) => annotation.type === 'usage')?.value;
+    /*
+     * getMessageAnnotations flattens an object payload onto the annotation, so a
+     * data-usage part arrives as { type: 'usage', totalTokens, ... }. The
+     * `value` branch is kept for hand-written or legacy payloads.
+     */
+    const usageData = (usageAnnotation?.value ?? usageAnnotation) as Record<string, unknown> | undefined;
 
-    const toolInvocations = parts?.filter((part) => part.type === 'tool-invocation');
+    const usage =
+      usageData &&
+      typeof usageData.totalTokens === 'number' &&
+      typeof usageData.promptTokens === 'number' &&
+      typeof usageData.completionTokens === 'number'
+        ? {
+            completionTokens: usageData.completionTokens,
+            promptTokens: usageData.promptTokens,
+            totalTokens: usageData.totalTokens,
+          }
+        : undefined;
+
+    /*
+     * Note the tool filter: `part.type === 'tool-invocation'` also type checks
+     * against v5's `tool-${string}` discriminant, so it kept compiling while
+     * silently returning an empty array once the discriminant changed, taking
+     * the whole MCP panel with it. isToolPart matches both.
+     */
+    const toolInvocations = parts?.filter((part) => isToolPart(part));
+
     const toolCallAnnotations = filteredAnnotations.filter(
       (annotation) => annotation.type === 'toolCall',
     ) as ToolCallAnnotation[];
@@ -176,10 +200,29 @@ export const AssistantMessage = memo(
             </div>
           </div>
         </>
-        <Markdown append={append} chatMode={chatMode} setChatMode={setChatMode} model={model} provider={provider} html>
-          {content}
-        </Markdown>
-        {toolInvocations && toolInvocations.length > 0 && (
+        <ThinkingDetails text={reasoningText} />
+        {chatMode === 'build' && toolInvocations && toolInvocations.length > 0 && (
+          <ToolInvocations
+            toolInvocations={toolInvocations}
+            toolCallAnnotations={toolCallAnnotations}
+            addToolResult={addToolResult}
+            orderedParts={parts}
+          />
+        )}
+        {(chatMode !== 'build' || !toolInvocations || toolInvocations.length === 0) && (
+          <Markdown
+            append={append}
+            chatMode={chatMode}
+            setChatMode={setChatMode}
+            model={model}
+            provider={provider}
+            isStreaming={isStreaming}
+            html
+          >
+            {messageText}
+          </Markdown>
+        )}
+        {chatMode !== 'build' && toolInvocations && toolInvocations.length > 0 && (
           <ToolInvocations
             toolInvocations={toolInvocations}
             toolCallAnnotations={toolCallAnnotations}

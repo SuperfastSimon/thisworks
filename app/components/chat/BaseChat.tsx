@@ -1,50 +1,53 @@
-/*
- * @ts-nocheck
- * Preventing TS checks with files presented in the video for a better presentation.
- */
-import type { JSONValue, Message } from 'ai';
-import React, { type RefCallback, useEffect, useState } from 'react';
+import { useStore } from '@nanostores/react';
+import * as Tooltip from '@radix-ui/react-tooltip';
+import type { UIMessage } from 'ai';
+import Cookies from 'js-cookie';
+import React, { lazy, Suspense, type RefCallback, useEffect, useState } from 'react';
 import { ClientOnly } from 'remix-utils/client-only';
+import { getApiKeysFromCookies } from './APIKeyManager';
+import styles from './BaseChat.module.scss';
+import ChatAlert from './ChatAlert';
+import { ChatBox } from './ChatBox';
+import GitCloneButton from './GitCloneButton';
+import LlmErrorAlert from './LLMApiAlert';
+import { Messages, type DisplayMessage } from './Messages.client';
+import ProgressCompilation from './ProgressCompilation';
+import StarterTemplates from './StarterTemplates';
+import { ToolApprovalTray } from './ToolApprovalTray';
+import { ExamplePrompts } from '~/components/chat/ExamplePrompts';
+import { ImportFolderButton } from '~/components/chat/ImportFolderButton';
+import { ImportZipButton } from '~/components/chat/ImportZipButton';
+import DeployChatAlert from '~/components/deploy/DeployAlert';
 import { Menu } from '~/components/sidebar/Menu.client';
-import { Workbench } from '~/components/workbench/Workbench.client';
+import type { ElementInfo } from '~/components/workbench/Inspector';
+import { WorkbenchReopenButton } from '~/components/workbench/WorkbenchReopenButton';
+import { API_KEYS_UPDATED_EVENT, type ApiKeysUpdatedDetail } from '~/lib/api/apiKeys';
+
+const LazyWorkbench = lazy(() =>
+  import('~/components/workbench/Workbench.client').then((m) => ({ default: m.Workbench })),
+);
+import { StickToBottom, useStickToBottomContext } from '~/lib/hooks';
+import type { ModelInfo } from '~/lib/modules/llm/types';
+import { expoUrlAtom } from '~/lib/stores/qrCodeStore';
+import { workbenchStore } from '~/lib/stores/workbench';
+import type { ActionAlert, DeployAlert, LlmErrorAlertType } from '~/types/actions';
+import type { ProgressAnnotation } from '~/types/context';
+import type { DesignScheme } from '~/types/design-scheme';
+import type { ProviderInfo } from '~/types/model';
 import { classNames } from '~/utils/classNames';
 import { PROVIDER_LIST } from '~/utils/constants';
-import { Messages } from './Messages.client';
-import { getApiKeysFromCookies } from './APIKeyManager';
-import Cookies from 'js-cookie';
-import * as Tooltip from '@radix-ui/react-tooltip';
-import styles from './BaseChat.module.scss';
-import { ImportButtons } from '~/components/chat/chatExportAndImport/ImportButtons';
-import { ExamplePrompts } from '~/components/chat/ExamplePrompts';
-import GitCloneButton from './GitCloneButton';
-import type { ProviderInfo } from '~/types/model';
-import StarterTemplates from './StarterTemplates';
-import type { ActionAlert, SupabaseAlert, DeployAlert, LlmErrorAlertType } from '~/types/actions';
-import DeployChatAlert from '~/components/deploy/DeployAlert';
-import ChatAlert from './ChatAlert';
-import type { ModelInfo } from '~/lib/modules/llm/types';
-import ProgressCompilation from './ProgressCompilation';
-import type { ProgressAnnotation } from '~/types/context';
-import { SupabaseChatAlert } from '~/components/chat/SupabaseAlert';
-import { expoUrlAtom } from '~/lib/stores/qrCodeStore';
-import { useStore } from '@nanostores/react';
-import { StickToBottom, useStickToBottomContext } from '~/lib/hooks';
-import { ChatBox } from './ChatBox';
-import type { DesignScheme } from '~/types/design-scheme';
-import type { ElementInfo } from '~/components/workbench/Inspector';
-import LlmErrorAlert from './LLMApiAlert';
 
 const TEXTAREA_MIN_HEIGHT = 76;
 
 interface BaseChatProps {
-  textareaRef?: React.RefObject<HTMLTextAreaElement> | undefined;
+  textareaRef?: React.RefObject<HTMLTextAreaElement | null> | undefined;
   messageRef?: RefCallback<HTMLDivElement> | undefined;
   scrollRef?: RefCallback<HTMLDivElement> | undefined;
   showChat?: boolean;
   chatStarted?: boolean;
   isStreaming?: boolean;
   onStreamingChange?: (streaming: boolean) => void;
-  messages?: Message[];
+  messages?: DisplayMessage[];
   description?: string;
   enhancingPrompt?: boolean;
   promptEnhanced?: boolean;
@@ -58,7 +61,7 @@ interface BaseChatProps {
   sendMessage?: (event: React.UIEvent, messageInput?: string) => void;
   handleInputChange?: (event: React.ChangeEvent<HTMLTextAreaElement>) => void;
   enhancePrompt?: () => void;
-  importChat?: (description: string, messages: Message[]) => Promise<void>;
+  importChat?: (description: string, messages: UIMessage[]) => Promise<void>;
   exportChat?: () => void;
   uploadedFiles?: File[];
   setUploadedFiles?: (files: File[]) => void;
@@ -66,22 +69,21 @@ interface BaseChatProps {
   setImageDataList?: (dataList: string[]) => void;
   actionAlert?: ActionAlert;
   clearAlert?: () => void;
-  supabaseAlert?: SupabaseAlert;
-  clearSupabaseAlert?: () => void;
   deployAlert?: DeployAlert;
-  clearDeployAlert?: () => void;
+  _clearDeployAlert?: () => void;
   llmErrorAlert?: LlmErrorAlertType;
   clearLlmErrorAlert?: () => void;
-  data?: JSONValue[] | undefined;
+  progressAnnotations?: ProgressAnnotation[];
   chatMode?: 'discuss' | 'build';
   setChatMode?: (mode: 'discuss' | 'build') => void;
-  append?: (message: Message) => void;
+  agentMode?: boolean;
+  setAgentMode?: (enabled: boolean) => void;
+  append?: (message: UIMessage) => void;
   designScheme?: DesignScheme;
   setDesignScheme?: (scheme: DesignScheme) => void;
   selectedElement?: ElementInfo | null;
   setSelectedElement?: (element: ElementInfo | null) => void;
-  addToolResult?: ({ toolCallId, result }: { toolCallId: string; result: any }) => void;
-  onWebSearchResult?: (result: string) => void;
+  addToolOutput?: (options: { tool: string; toolCallId: string; output: unknown }) => void;
 }
 
 export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
@@ -115,23 +117,22 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
       actionAlert,
       clearAlert,
       deployAlert,
-      clearDeployAlert,
-      supabaseAlert,
-      clearSupabaseAlert,
+      _clearDeployAlert,
       llmErrorAlert,
       clearLlmErrorAlert,
-      data,
+      progressAnnotations: incomingProgressAnnotations,
       chatMode,
       setChatMode,
+      agentMode,
+      setAgentMode,
       append,
       designScheme,
       setDesignScheme,
       selectedElement,
       setSelectedElement,
-      addToolResult = () => {
-        throw new Error('addToolResult not implemented');
+      addToolOutput = () => {
+        throw new Error('addToolOutput not implemented');
       },
-      onWebSearchResult,
     },
     ref,
   ) => {
@@ -143,8 +144,9 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
     const [recognition, setRecognition] = useState<SpeechRecognition | null>(null);
     const [transcript, setTranscript] = useState('');
     const [isModelLoading, setIsModelLoading] = useState<string | undefined>('all');
-    const [progressAnnotations, setProgressAnnotations] = useState<ProgressAnnotation[]>([]);
+
     const expoUrl = useStore(expoUrlAtom);
+    const showWorkbench = useStore(workbenchStore.showWorkbench);
     const [qrModalOpen, setQrModalOpen] = useState(false);
 
     useEffect(() => {
@@ -153,14 +155,6 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
       }
     }, [expoUrl]);
 
-    useEffect(() => {
-      if (data) {
-        const progressList = data.filter(
-          (x) => typeof x === 'object' && (x as any).type === 'progress',
-        ) as ProgressAnnotation[];
-        setProgressAnnotations(progressList);
-      }
-    }, [data]);
     useEffect(() => {
       console.log(transcript);
     }, [transcript]);
@@ -214,7 +208,17 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
         }
 
         setIsModelLoading('all');
-        fetch('/api/models')
+
+        if (!providerList?.length) {
+          setModelList([]);
+          setIsModelLoading(undefined);
+
+          return;
+        }
+
+        const activeProviderNames = providerList.map((activeProvider) => activeProvider.name).join(',');
+
+        fetch(`/api/models?providers=${encodeURIComponent(activeProviderNames)}`)
           .then((response) => response.json())
           .then((data) => {
             const typedData = data as { modelList: ModelInfo[] };
@@ -253,6 +257,32 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
       });
       setIsModelLoading(undefined);
     };
+
+    useEffect(() => {
+      const handleApiKeysUpdated = (event: Event) => {
+        const { apiKeys, providerName } = (event as CustomEvent<ApiKeysUpdatedDetail>).detail;
+        setApiKeys(apiKeys);
+        setIsModelLoading(providerName);
+
+        fetch(`/api/models/${encodeURIComponent(providerName)}`)
+          .then((response) => response.json())
+          .then((data) => {
+            const providerModels = (data as { modelList: ModelInfo[] }).modelList;
+            setModelList((currentModels) => [
+              ...currentModels.filter((model) => model.provider !== providerName),
+              ...providerModels,
+            ]);
+          })
+          .catch((error) => {
+            console.error('Error loading dynamic models for:', providerName, error);
+          })
+          .finally(() => setIsModelLoading(undefined));
+      };
+
+      window.addEventListener(API_KEYS_UPDATED_EVENT, handleApiKeysUpdated);
+
+      return () => window.removeEventListener(API_KEYS_UPDATED_EVENT, handleApiKeysUpdated);
+    }, []);
 
     const startListening = () => {
       if (recognition) {
@@ -348,6 +378,9 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
         data-chat-visible={showChat}
       >
         <ClientOnly>{() => <Menu />}</ClientOnly>
+        {chatStarted && showChat && !showWorkbench && (
+          <WorkbenchReopenButton onClick={() => workbenchStore.showWorkbench.set(true)} />
+        )}
         <div className="flex flex-col lg:flex-row overflow-y-auto w-full h-full">
           <div className={classNames(styles.Chat, 'flex flex-col flex-grow lg:min-w-[var(--chat-min-width)] h-full')}>
             {!chatStarted && (
@@ -380,7 +413,7 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
                         setChatMode={setChatMode}
                         provider={provider}
                         model={model}
-                        addToolResult={addToolResult}
+                        addToolResult={addToolOutput}
                       />
                     ) : null;
                   }}
@@ -396,20 +429,9 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
                   {deployAlert && (
                     <DeployChatAlert
                       alert={deployAlert}
-                      clearAlert={() => clearDeployAlert?.()}
+                      clearAlert={() => _clearDeployAlert?.()}
                       postMessage={(message: string | undefined) => {
                         sendMessage?.({} as any, message);
-                        clearSupabaseAlert?.();
-                      }}
-                    />
-                  )}
-                  {supabaseAlert && (
-                    <SupabaseChatAlert
-                      alert={supabaseAlert}
-                      clearAlert={() => clearSupabaseAlert?.()}
-                      postMessage={(message) => {
-                        sendMessage?.({} as any, message);
-                        clearSupabaseAlert?.();
                       }}
                     />
                   )}
@@ -425,7 +447,8 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
                   )}
                   {llmErrorAlert && <LlmErrorAlert alert={llmErrorAlert} clearAlert={() => clearLlmErrorAlert?.()} />}
                 </div>
-                {progressAnnotations && <ProgressCompilation data={progressAnnotations} />}
+                <ToolApprovalTray messages={messages} addToolOutput={addToolOutput} />
+                {incomingProgressAnnotations && <ProgressCompilation data={incomingProgressAnnotations} />}
                 <ChatBox
                   isModelSettingsCollapsed={isModelSettingsCollapsed}
                   setIsModelSettingsCollapsed={setIsModelSettingsCollapsed}
@@ -463,18 +486,40 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
                   handleFileUpload={handleFileUpload}
                   chatMode={chatMode}
                   setChatMode={setChatMode}
+                  agentMode={agentMode}
+                  setAgentMode={setAgentMode}
                   designScheme={designScheme}
                   setDesignScheme={setDesignScheme}
                   selectedElement={selectedElement}
                   setSelectedElement={setSelectedElement}
-                  onWebSearchResult={onWebSearchResult}
                 />
               </div>
             </StickToBottom>
             <div className="flex flex-col justify-center">
               {!chatStarted && (
                 <div className="flex justify-center gap-2">
-                  {ImportButtons(importChat)}
+                  <ImportFolderButton
+                    importChat={importChat}
+                    className={classNames(
+                      'gap-2 bg-bolt-elements-background-depth-1',
+                      'text-bolt-elements-textPrimary',
+                      'hover:bg-bolt-elements-background-depth-2',
+                      'border border-[rgba(0,0,0,0.08)] dark:border-[rgba(255,255,255,0.08)]',
+                      'h-10 px-4 py-2 min-w-[120px] justify-center',
+                      'transition-all duration-200 ease-in-out rounded-lg',
+                    )}
+                  />
+                  <ImportZipButton
+                    importChat={importChat}
+                    className={classNames(
+                      'gap-2 bg-bolt-elements-background-depth-1',
+                      'text-bolt-elements-textPrimary',
+                      'hover:bg-bolt-elements-background-depth-2',
+                      'border border-[rgba(0,0,0,0.08)] dark:border-[rgba(255,255,255,0.08)]',
+                      'h-10 px-4 py-2 min-w-[120px] justify-center',
+                      'transition-all duration-200 ease-in-out rounded-lg',
+                    )}
+                  />
                   <GitCloneButton importChat={importChat} />
                 </div>
               )}
@@ -494,7 +539,15 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
           </div>
           <ClientOnly>
             {() => (
-              <Workbench chatStarted={chatStarted} isStreaming={isStreaming} setSelectedElement={setSelectedElement} />
+              <Suspense fallback={null}>
+                <LazyWorkbench
+                  chatStarted={chatStarted}
+                  isStreaming={isStreaming}
+                  selectedElement={selectedElement}
+                  setSelectedElement={setSelectedElement}
+                  exportChat={exportChat}
+                />
+              </Suspense>
             )}
           </ClientOnly>
         </div>

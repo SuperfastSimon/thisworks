@@ -1,28 +1,28 @@
+import { useStore } from '@nanostores/react';
+import { formatDistanceToNow } from 'date-fns';
+import {
+  Cloud as CloudIcon,
+  Landmark as BuildingLibraryIcon,
+  Clock as ClockIcon,
+  Code as CodeBracketIcon,
+  CheckCircle as CheckCircleIcon,
+  XCircle as XCircleIcon,
+  Trash2 as TrashIcon,
+  RefreshCw as ArrowPathIcon,
+  Lock as LockClosedIcon,
+  Unlock as LockOpenIcon,
+  Rocket as RocketLaunchIcon,
+  BarChart3 as ChartBarIcon,
+  Settings as CogIcon,
+} from 'lucide-react';
 import React, { useState, useEffect } from 'react';
 import { toast } from 'react-toastify';
-import { classNames } from '~/utils/classNames';
-import { useStore } from '@nanostores/react';
-import { netlifyConnection, updateNetlifyConnection, initializeNetlifyConnection } from '~/lib/stores/netlify';
-import type { NetlifySite, NetlifyDeploy, NetlifyBuild, NetlifyUser } from '~/types/netlify';
-import {
-  CloudIcon,
-  BuildingLibraryIcon,
-  ClockIcon,
-  CodeBracketIcon,
-  CheckCircleIcon,
-  XCircleIcon,
-  TrashIcon,
-  ArrowPathIcon,
-  LockClosedIcon,
-  LockOpenIcon,
-  RocketLaunchIcon,
-  ChartBarIcon,
-  CogIcon,
-} from '@heroicons/react/24/outline';
+import { Badge } from '~/components/ui/Badge';
 import { Button } from '~/components/ui/Button';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '~/components/ui/Collapsible';
-import { formatDistanceToNow } from 'date-fns';
-import { Badge } from '~/components/ui/Badge';
+import { netlifyConnection, updateNetlifyConnection, initializeNetlifyConnection } from '~/lib/stores/netlify';
+import type { NetlifySite, NetlifyDeploy, NetlifyBuild, NetlifyUser } from '~/types/netlify';
+import { classNames } from '~/utils/classNames';
 
 // Add the Netlify logo SVG component at the top of the file
 const NetlifyLogo = () => (

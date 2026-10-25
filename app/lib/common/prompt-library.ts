@@ -1,6 +1,7 @@
-import { getSystemPrompt } from './prompts/prompts';
-import optimized from './prompts/optimized';
 import { getFineTunedPrompt } from './prompts/new-prompt';
+import optimized from './prompts/optimized';
+import { getProjectToolPrompt } from './prompts/project-tools';
+import { getTinyTimPrompt } from './prompts/tiny-tim';
 import type { DesignScheme } from '~/types/design-scheme';
 
 export interface PromptOptions {
@@ -8,6 +9,7 @@ export interface PromptOptions {
   allowedHtmlElements: string[];
   modificationTagName: string;
   designScheme?: DesignScheme;
+  projectTools?: boolean;
   supabase?: {
     isConnected: boolean;
     hasSelectedProject: boolean;
@@ -29,17 +31,20 @@ export class PromptLibrary {
   > = {
     default: {
       label: 'Default Prompt',
-      description: 'An fine tuned prompt for better results and less token usage',
-      get: (options) => getFineTunedPrompt(options.cwd, options.supabase, options.designScheme),
+      description: 'Optimized prompt with improved tool usage and error recovery',
+      get: (options) =>
+        options.projectTools
+          ? getProjectToolPrompt(options)
+          : getFineTunedPrompt(options.cwd, options.supabase, options.designScheme),
     },
-    original: {
-      label: 'Old Default Prompt',
-      description: 'The OG battle tested default system Prompt',
-      get: (options) => getSystemPrompt(options.cwd, options.supabase, options.designScheme),
+    'tiny-tim': {
+      label: 'Tiny Tim',
+      description: 'Optimized for small models with terse format and modern 2026 standards',
+      get: (options) => getTinyTimPrompt(options.cwd, options.supabase, options.designScheme),
     },
-    optimized: {
-      label: 'Optimized Prompt (experimental)',
-      description: 'An Experimental version of the prompt for lower token usage',
+    'experimental-prompt': {
+      label: 'Experimental Prompt',
+      description: 'Experimental version of the prompt for lower token usage',
       get: (options) => optimized(options),
     },
   };

@@ -1,10 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
 import { useStore } from '@nanostores/react';
-import { toast } from 'react-toastify';
 import Cookies from 'js-cookie';
-import type { GitLabConnection } from '~/types/GitLab';
+import { useState, useEffect, useCallback } from 'react';
+import { toast } from 'react-toastify';
 import { useGitLabAPI } from './useGitLabAPI';
 import { gitlabConnectionStore, gitlabConnection, isGitLabConnected } from '~/lib/stores/gitlabConnection';
+import type { GitLabConnection } from '~/types/GitLab';
 
 export interface ConnectionState {
   isConnected: boolean;
@@ -24,7 +24,8 @@ export interface UseGitLabConnectionReturn extends ConnectionState {
 
 const STORAGE_KEY = 'gitlab_connection';
 
-export function useGitLabConnection(): UseGitLabConnectionReturn {
+export function useGitLabConnection(options: { fetchStatsOnConnect?: boolean } = {}): UseGitLabConnectionReturn {
+  const { fetchStatsOnConnect = true } = options;
   const connection = useStore(gitlabConnection);
   const isConnected = useStore(isGitLabConnected);
   const [error, setError] = useState<string | null>(null);
@@ -89,6 +90,7 @@ export function useGitLabConnection(): UseGitLabConnectionReturn {
     try {
       // Make direct API call instead of using hook
       const baseUrl = connection.gitlabUrl || 'https://gitlab.com';
+
       const response = await fetch(`${baseUrl}/api/v4/user`, {
         headers: {
           'Content-Type': 'application/json',
@@ -118,55 +120,60 @@ export function useGitLabConnection(): UseGitLabConnectionReturn {
     }
   }, []);
 
-  const connect = useCallback(async (token: string, gitlabUrl = 'https://gitlab.com') => {
-    if (!token.trim()) {
-      setError('Token is required');
-      return;
-    }
-
-    setIsConnecting(true);
-    setError(null);
-
-    try {
-      console.log('Calling GitLab store connect method...');
-
-      // Use the store's connect method which handles everything properly
-      const result = await gitlabConnectionStore.connect(token, gitlabUrl);
-
-      if (!result.success) {
-        throw new Error(result.error || 'Connection failed');
+  const connect = useCallback(
+    async (token: string, gitlabUrl = 'https://gitlab.com') => {
+      if (!token.trim()) {
+        setError('Token is required');
+        return;
       }
 
-      console.log('GitLab connection successful, now fetching stats...');
+      setIsConnecting(true);
+      setError(null);
 
-      // Fetch stats after successful connection
       try {
-        const statsResult = await gitlabConnectionStore.fetchStats(true);
+        console.log('Calling GitLab store connect method...');
 
-        if (statsResult.success) {
-          console.log('GitLab stats fetched successfully:', statsResult.stats);
-        } else {
-          console.error('Failed to fetch GitLab stats:', statsResult.error);
+        // Use the store's connect method which handles everything properly
+        const result = await gitlabConnectionStore.connect(token, gitlabUrl);
+
+        if (!result.success) {
+          throw new Error(result.error || 'Connection failed');
         }
-      } catch (statsError) {
-        console.error('Failed to fetch GitLab stats:', statsError);
 
-        // Don't fail the connection if stats fail
+        if (fetchStatsOnConnect) {
+          console.log('GitLab connection successful, now fetching stats...');
+
+          // Fetch stats after successful connection
+          try {
+            const statsResult = await gitlabConnectionStore.fetchStats(true);
+
+            if (statsResult.success) {
+              console.log('GitLab stats fetched successfully:', statsResult.stats);
+            } else {
+              console.error('Failed to fetch GitLab stats:', statsResult.error);
+            }
+          } catch (statsError) {
+            console.error('Failed to fetch GitLab stats:', statsError);
+
+            // Don't fail the connection if stats fail
+          }
+        }
+
+        toast.success('Connected to GitLab successfully!');
+      } catch (error) {
+        console.error('Failed to connect to GitLab:', error);
+
+        const errorMessage = error instanceof Error ? error.message : 'Failed to connect to GitLab';
+
+        setError(errorMessage);
+        toast.error(`Failed to connect: ${errorMessage}`);
+        throw error;
+      } finally {
+        setIsConnecting(false);
       }
-
-      toast.success('Connected to GitLab successfully!');
-    } catch (error) {
-      console.error('Failed to connect to GitLab:', error);
-
-      const errorMessage = error instanceof Error ? error.message : 'Failed to connect to GitLab';
-
-      setError(errorMessage);
-      toast.error(`Failed to connect: ${errorMessage}`);
-      throw error;
-    } finally {
-      setIsConnecting(false);
-    }
-  }, []);
+    },
+    [fetchStatsOnConnect],
+  );
 
   const disconnect = useCallback(() => {
     // Clear localStorage
@@ -210,6 +217,7 @@ export function useGitLabConnection(): UseGitLabConnectionReturn {
 
     try {
       const baseUrl = connection.gitlabUrl || 'https://gitlab.com';
+
       const response = await fetch(`${baseUrl}/api/v4/user`, {
         headers: {
           'Content-Type': 'application/json',

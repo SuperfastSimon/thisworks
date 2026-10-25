@@ -1,5 +1,5 @@
-import type { Message } from 'ai';
 import { useCallback, useState } from 'react';
+import { getMessageText } from '~/lib/persistence/messageMigration';
 import { EnhancedStreamingMessageParser } from '~/lib/runtime/enhanced-message-parser';
 import { workbenchStore } from '~/lib/stores/workbench';
 import { createScopedLogger } from '~/utils/logger';
@@ -49,32 +49,37 @@ const messageParser = new EnhancedStreamingMessageParser({
     },
   },
 });
-const extractTextContent = (message: Message) =>
-  Array.isArray(message.content)
-    ? (message.content.find((item) => item.type === 'text')?.text as string) || ''
-    : message.content;
 
 export function useMessageParser() {
   const [parsedMessages, setParsedMessages] = useState<{ [key: number]: string }>({});
 
-  const parseMessages = useCallback((messages: Message[], isLoading: boolean) => {
-    let reset = false;
+  /**
+   * Drops the parser state and everything it has rendered so far.
+   *
+   * Required when another chat's history is loaded: the parser only emits the
+   * artifact and action callbacks once per message id, so without a reset the
+   * incoming chat would render on top of the outgoing one's output.
+   */
+  const resetParsedMessages = useCallback(() => {
+    messageParser.reset();
+    setParsedMessages({});
+  }, []);
 
-    if (import.meta.env.DEV && !isLoading) {
-      reset = true;
-      messageParser.reset();
-    }
-
+  const parseMessages = useCallback((messages: { id: string; role?: string }[], isLoading: boolean) => {
     for (const [index, message] of messages.entries()) {
       if (message.role === 'assistant' || message.role === 'user') {
-        const newParsedContent = messageParser.parse(message.id, extractTextContent(message));
+        const newParsedContent = messageParser.parse(
+          message.id,
+          getMessageText(message),
+          message.role === 'assistant' && !isLoading,
+        );
         setParsedMessages((prevParsed) => ({
           ...prevParsed,
-          [index]: !reset ? (prevParsed[index] || '') + newParsedContent : newParsedContent,
+          [index]: (prevParsed[index] || '') + newParsedContent,
         }));
       }
     }
   }, []);
 
-  return { parsedMessages, parseMessages };
+  return { parsedMessages, parseMessages, resetParsedMessages };
 }
