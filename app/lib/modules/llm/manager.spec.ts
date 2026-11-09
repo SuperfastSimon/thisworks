@@ -102,9 +102,9 @@ describe('LLMManager', () => {
     }
   });
 
-  it('defaults to OpenAI regardless of registration order', () => {
+  it('defaults to OpenRouter regardless of registration order', () => {
     const manager = LLMManager.getInstance({});
-    expect(manager.getDefaultProvider().name).toBe('OpenAI');
+    expect(manager.getDefaultProvider().name).toBe('OpenRouter');
   });
 
   it('getProvider returns the registered provider', () => {
