@@ -1,8 +1,9 @@
 name: Docker Publish
 
+# Niet meer bij elke push naar main/stable: in een private repo tellen de multi-arch
+# images op ghcr.io mee in dezelfde opslagquota als Actions-artifacts.
 on:
   push:
-    branches: [main, stable]
     tags: ['v*', '*.*.*']
   workflow_dispatch:
 
