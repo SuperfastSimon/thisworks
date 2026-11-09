@@ -23,34 +23,38 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: ['javascript', 'typescript']
+        # 'javascript-typescript' is één CodeQL-extractor; twee entries gaven dubbel werk en dubbele alerts
+        language: ['javascript-typescript']
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
           queries: security-extended,security-and-quality
 
       - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
+        uses: github/codeql-action/autobuild@v4
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
         with:
           category: "/language:${{matrix.language}}"
           upload: false
+          upload-database: false
           output: "codeql-results"
 
       - name: Upload CodeQL results as artifact
         uses: actions/upload-artifact@v7
         if: always()
+        continue-on-error: true # artifact-opslagquota mag de job niet laten falen
         with:
           name: codeql-results-${{ matrix.language }}
           path: codeql-results
+          retention-days: 7
 
   dependency-scan:
     name: Dependency Vulnerability Scan
@@ -77,19 +81,23 @@ jobs:
 
       - name: Generate SBOM
         uses: anchore/sbom-action@v0
+        # SBOM is informatief; een tijdelijke download-fout van syft (HTTP 504) mag de scan niet rood maken
+        continue-on-error: true
         with:
           path: ./
           format: spdx-json
-          artifact-name: sbom.spdx.json
+          output-file: sbom.spdx.json
+          upload-artifact: false
 
       - name: Upload SBOM as artifact
         uses: actions/upload-artifact@v7
         if: always()
+        continue-on-error: true # artifact-opslagquota mag de job niet laten falen
         with:
           name: sbom-results
-          path: |
-            sbom.spdx.json
-            **/sbom.spdx.json
+          path: sbom.spdx.json
+          if-no-files-found: ignore
+          retention-days: 7
 
   secrets-scan:
     name: Secrets Detection
@@ -113,7 +121,9 @@ jobs:
       - name: Upload Trivy secrets results as artifact
         uses: actions/upload-artifact@v7
         if: always()
+        continue-on-error: true # artifact-opslagquota mag de job niet laten falen
         with:
           name: trivy-secrets-results
           path: trivy-secrets-results.sarif
+          retention-days: 7
 
