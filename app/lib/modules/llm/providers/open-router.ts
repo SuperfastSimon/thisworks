@@ -29,6 +29,20 @@ export default class OpenRouterProvider extends BaseProvider {
 
   staticModels: ModelInfo[] = [
     {
+      name: 'google/gemini-3.8-flash',
+      label: 'Gemini 3.8 Flash',
+      provider: 'OpenRouter',
+      maxTokenAllowed: 1048576,
+      maxCompletionTokens: 65536,
+    },
+    {
+      name: 'anthropic/claude-sonnet-5.5',
+      label: 'Claude Sonnet 5.5',
+      provider: 'OpenRouter',
+      maxTokenAllowed: 1000000,
+      maxCompletionTokens: 128000,
+    },
+    {
       name: 'z-ai/glm-5.3-flash',
       label: 'GLM 5.3 Flash',
       provider: 'OpenRouter',
